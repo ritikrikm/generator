@@ -60,10 +60,16 @@ class ExplorerService:
         query: str,
         mode: SearchMode = SearchMode.CASE_INSENSITIVE,
         node_types: set[NodeType] | None = None,
+        limit: int = 50,
     ) -> tuple[SearchResult, ...]:
         """Search a repository graph."""
 
-        return SearchEngine(graph).search(query=query, mode=mode, node_types=node_types)
+        return SearchEngine(graph).search(
+            query=query,
+            mode=mode,
+            node_types=node_types,
+            limit=limit,
+        )
 
     @staticmethod
     def node_details(graph: RepositoryGraph, node_id: str) -> dict[str, object]:

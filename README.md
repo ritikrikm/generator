@@ -123,3 +123,16 @@ The Relationship Explorer is file-first. Select an indexed file, then:
 - The flow traces Feature -> Scenario -> Step -> Step Definition -> Java/Page/Wrapper methods -> Property Key -> XPath.
 - Scenario Outline example values are hidden by default and can be enabled with a toggle.
 - For Java/properties/resource files, select a node in that file to see its direct parents, children, and diagram.
+
+## Search
+
+Search supports exact, partial, case-insensitive, and fuzzy matching. Results can be filtered by:
+
+- Search area: all files, feature files, Java files, property files, JSON files, XML files, or other files.
+- Specific indexed file.
+- Graph node type.
+- Scenario Outline example values, which are hidden by default.
+
+When searching all areas, results are grouped into clickable tabs such as Feature files,
+Java files, Property files, JSON files, and XML files. Use Search to find a node, then use
+Relationship Explorer to inspect its implementation flow.

@@ -12,6 +12,10 @@ from automation_repository_explorer.ui.pages.home import render_home
 from automation_repository_explorer.ui.pages.relationship_explorer import render_relationship_explorer
 from automation_repository_explorer.ui.pages.repository_summary import render_repository_summary
 from automation_repository_explorer.ui.pages.search import render_search
+from automation_repository_explorer.ui.repository_upload import (
+    RepositoryUploadError,
+    extract_repository_zip,
+)
 from automation_repository_explorer.ui.state import (
     get_repository_path,
     get_service,
@@ -30,14 +34,28 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Repository")
-        repository_text = st.text_input("Repository path", value=get_repository_path())
-        if st.button("Scan repository", type="primary"):
-            repository_path = Path(repository_text).expanduser().resolve()
-            with st.spinner("Scanning repository..."):
-                context = get_service().explore(repository_path)
-            set_repository_path(repository_path)
-            set_context(context)
-            st.success("Repository scanned.")
+        repository_source = st.radio(
+            "Repository source",
+            ["Local path", "Upload ZIP"],
+            horizontal=True,
+        )
+        if repository_source == "Local path":
+            repository_text = st.text_input("Repository path", value=get_repository_path())
+            if st.button("Scan repository", type="primary"):
+                repository_path = Path(repository_text).expanduser().resolve()
+                _scan_repository(repository_path)
+        else:
+            uploaded_file = st.file_uploader("Repository ZIP", type=["zip"])
+            if uploaded_file is not None and st.button("Scan uploaded ZIP", type="primary"):
+                try:
+                    repository_path = extract_repository_zip(
+                        uploaded_file.name,
+                        uploaded_file.getvalue(),
+                    )
+                except RepositoryUploadError as exc:
+                    st.error(str(exc))
+                else:
+                    _scan_repository(repository_path)
 
         st.header("Pages")
         page = st.radio(
@@ -56,6 +74,16 @@ def main() -> None:
         render_relationship_explorer()
     elif page == "Details":
         render_details()
+
+
+def _scan_repository(repository_path: Path) -> None:
+    """Scan a repository and store the active exploration context."""
+
+    with st.spinner("Scanning repository..."):
+        context = get_service().explore(repository_path)
+    set_repository_path(repository_path)
+    set_context(context)
+    st.success("Repository scanned.")
 
 
 if __name__ == "__main__":

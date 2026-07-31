@@ -44,11 +44,24 @@ pytest
 streamlit run automation_repository_explorer/ui/app.py
 ```
 
-In the sidebar, scan:
+In the sidebar, choose one repository source:
+
+- `Local path` scans a repository folder available on the same machine running ARE.
+- `Upload ZIP` scans a zipped repository, which is the recommended option when ARE is deployed on Streamlit Cloud.
+
+For local testing, scan:
 
 ```text
 sample_repo
 ```
+
+For Streamlit Community Cloud, use:
+
+```text
+streamlit_app.py
+```
+
+as the main app file.
 
 ## Project Structure
 

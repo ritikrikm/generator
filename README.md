@@ -114,3 +114,12 @@ docs/
 - Scenario Outline example value mapping
 - Streamlit UI
 - Unit tests
+
+## Relationship Explorer
+
+The Relationship Explorer is file-first. Select an indexed file, then:
+
+- For `.feature` files, choose the feature and scenario to see a flow table and diagram.
+- The flow traces Feature -> Scenario -> Step -> Step Definition -> Java/Page/Wrapper methods -> Property Key -> XPath.
+- Scenario Outline example values are hidden by default and can be enabled with a toggle.
+- For Java/properties/resource files, select a node in that file to see its direct parents, children, and diagram.

@@ -55,6 +55,27 @@ For local testing, scan:
 sample_repo
 ```
 
+On a Windows company laptop, run:
+
+```bat
+run_are_windows.bat
+```
+
+Then open:
+
+```text
+http://localhost:8501
+```
+
+Use `Local path` and enter the repository folder path, for example:
+
+```text
+C:\Users\TAT6902\IdeaProjects\huntresspod_ng\huntress_MMSRB
+```
+
+Local paths only work when ARE is running on the same machine as the repository. A
+hosted Streamlit Cloud app cannot read files from your laptop by path.
+
 For Streamlit Community Cloud, use:
 
 ```text

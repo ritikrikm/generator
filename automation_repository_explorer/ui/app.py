@@ -6,6 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
+from automation_repository_explorer.core.exceptions import RepositoryScanError
 from automation_repository_explorer.core.logging_config import configure_logging
 from automation_repository_explorer.ui.pages.details import render_details
 from automation_repository_explorer.ui.pages.home import render_home
@@ -40,6 +41,7 @@ def main() -> None:
             horizontal=True,
         )
         if repository_source == "Local path":
+            st.caption("Use this when ARE is running on the same machine as the repository.")
             repository_text = st.text_input("Repository path", value=get_repository_path())
             if st.button("Scan repository", type="primary"):
                 repository_path = Path(repository_text).expanduser().resolve()
@@ -82,8 +84,17 @@ def main() -> None:
 def _scan_repository(repository_path: Path) -> None:
     """Scan a repository and store the active exploration context."""
 
-    with st.spinner("Scanning repository..."):
-        context = get_service().explore(repository_path)
+    try:
+        with st.spinner("Scanning repository..."):
+            context = get_service().explore(repository_path)
+    except RepositoryScanError as exc:
+        st.error(str(exc))
+        st.info(
+            "If this path is on your company laptop, run ARE locally on that laptop. "
+            "A Streamlit Cloud website cannot read local C:\\ or /Users paths from your browser."
+        )
+        return
+
     set_repository_path(repository_path)
     set_context(context)
     st.success("Repository scanned.")

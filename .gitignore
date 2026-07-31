@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# Generated Excel files can be recreated from the feature files.
+*_TestCases*.xlsx

@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=70.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "automation-repository-explorer"
+version = "0.1.0"
+description = "Static analysis explorer for Java Selenium Cucumber automation repositories."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Automation Repository Explorer" }]
+dependencies = [
+  "rapidfuzz>=3.9.0",
+  "streamlit>=1.36.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "mypy>=1.10.0",
+  "ruff>=0.5.0",
+]
+java-tree-sitter = [
+  "tree-sitter>=0.22.0",
+  "tree-sitter-java>=0.21.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["automation_repository_explorer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true

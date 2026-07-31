@@ -3,12 +3,38 @@
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from automation_repository_explorer.core.exceptions import RepositoryScanError
 from automation_repository_explorer.models.domain import RepositoryFile
 
 LOGGER = logging.getLogger(__name__)
+
+IGNORED_DIRECTORIES = {
+    ".git",
+    ".idea",
+    ".mvn",
+    ".settings",
+    "__MACOSX",
+    "__pycache__",
+    "allure-results",
+    "build",
+    "classes",
+    "coverage",
+    "dist",
+    "generated-test-sources",
+    "htmlreport",
+    "log",
+    "maven-archiver",
+    "maven-status",
+    "node_modules",
+    "out",
+    "surefire-reports",
+    "target",
+    "test-output",
+    "testreport-archive",
+}
 
 
 class RepositoryScanner:
@@ -26,17 +52,29 @@ class RepositoryScanner:
             raise RepositoryScanError(f"Repository path must be a directory: {repository_path}")
 
         files: list[RepositoryFile] = []
-        for path in repository_path.rglob("*"):
-            if not path.is_file():
-                continue
-            extension = path.suffix.lower()
-            if extension not in self._supported_extensions:
-                continue
-            try:
-                size = path.stat().st_size
-            except OSError as exc:
-                LOGGER.warning("Skipping unreadable file %s: %s", path, exc)
-                continue
-            files.append(RepositoryFile(path=path, extension=extension, size_bytes=size))
+        for root, directories, file_names in os.walk(repository_path):
+            directories[:] = [
+                directory
+                for directory in directories
+                if directory.lower() not in IGNORED_DIRECTORIES
+            ]
+            root_path = Path(root)
+            for file_name in file_names:
+                path = root_path / file_name
+                extension = path.suffix.lower()
+                if extension not in self._supported_extensions:
+                    continue
+                try:
+                    size = path.stat().st_size
+                except OSError as exc:
+                    LOGGER.warning("Skipping unreadable file %s: %s", path, exc)
+                    continue
+                files.append(RepositoryFile(path=path, extension=extension, size_bytes=size))
 
         return tuple(sorted(files, key=lambda item: str(item.path)))
+
+    @staticmethod
+    def is_ignored_directory(path: Path) -> bool:
+        """Return whether a directory is skipped during scanning."""
+
+        return path.name.lower() in IGNORED_DIRECTORIES

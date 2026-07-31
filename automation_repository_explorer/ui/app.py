@@ -45,8 +45,11 @@ def main() -> None:
                 repository_path = Path(repository_text).expanduser().resolve()
                 _scan_repository(repository_path)
         else:
+            st.caption("Zip the repository folder and upload it here. Generated folders like target are skipped.")
             uploaded_file = st.file_uploader("Repository ZIP", type=["zip"])
-            if uploaded_file is not None and st.button("Scan uploaded ZIP", type="primary"):
+            if uploaded_file is None:
+                st.info("After the upload finishes, the scan button will appear here.")
+            elif st.button("Scan uploaded ZIP", type="primary", use_container_width=True):
                 try:
                     repository_path = extract_repository_zip(
                         uploaded_file.name,

@@ -10,6 +10,8 @@ import streamlit as st
 from automation_repository_explorer.models.graph import GraphEdge, GraphNode, NodeType, RelationType
 from automation_repository_explorer.services.explorer_service import ExplorationContext
 from automation_repository_explorer.ui.components import node_label, node_table_rows
+from automation_repository_explorer.ui.flow_graph import feature_flow_graph, relationship_neighborhood
+from automation_repository_explorer.ui.interactive_graph import render_interactive_graph
 from automation_repository_explorer.ui.state import get_context
 
 IMPLEMENTATION_NODE_TYPES = {
@@ -90,11 +92,21 @@ def _render_feature_file_flow(
     st.write("Flow Table")
     st.dataframe(flow_rows, use_container_width=True, hide_index=True)
 
-    st.write("Flow Diagram")
-    st.graphviz_chart(_feature_flow_diagram(context, selected_feature, scenarios_to_render))
+    st.write("Interactive Flow")
+    graph_nodes, graph_edges = feature_flow_graph(
+        context,
+        selected_feature,
+        scenarios_to_render,
+        include_examples=include_examples,
+    )
+    render_interactive_graph(graph_nodes, graph_edges)
 
     with st.expander("Raw selected-file nodes"):
-        nodes = tuple(node for node in _nodes_for_file(context, selected_file) if include_examples or node.type != NodeType.EXAMPLE_VALUE)
+        nodes = tuple(
+            node
+            for node in _nodes_for_file(context, selected_file)
+            if include_examples or node.type != NodeType.EXAMPLE_VALUE
+        )
         st.dataframe(node_table_rows(nodes), use_container_width=True, hide_index=True)
 
 
@@ -108,7 +120,10 @@ def _render_non_feature_file_flow(
         st.info("No graph nodes were created for this file.")
         return
 
-    node_options = {node_label(node): node for node in sorted(file_nodes, key=lambda node: (node.type.value, node.name))}
+    node_options = {
+        node_label(node): node
+        for node in sorted(file_nodes, key=lambda node: (node.type.value, node.name))
+    }
     selected_node = node_options[st.selectbox("Node in file", list(node_options))]
 
     st.write("Selected Node")
@@ -118,8 +133,14 @@ def _render_non_feature_file_flow(
     rows = _direct_relationship_rows(context, selected_node)
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
-    st.write("Relationship Diagram")
-    st.graphviz_chart(_direct_relationship_diagram(context, selected_node))
+    st.write("Interactive Relationships")
+    graph_nodes, graph_edges = relationship_neighborhood(
+        context,
+        selected_node.id,
+        max_depth=2,
+        include_examples=False,
+    )
+    render_interactive_graph(graph_nodes, graph_edges)
 
 
 def _feature_flow_rows(
@@ -137,13 +158,22 @@ def _feature_flow_rows(
                 RelationType.MATCHES_STEP_DEFINITION,
             )
             for step_definition in step_definitions:
-                rows.append(_row("Step Definition", step_definition, step_node.name, "Step matches annotation"))
+                rows.append(
+                    _row("Step Definition", step_definition, step_node.name, "Step matches annotation")
+                )
                 methods = _children_by_relation(context, step_definition.id, RelationType.IMPLEMENTED_BY)
                 for method in methods:
                     _append_method_flow_rows(context, rows, method, step_definition.name, depth=0)
 
             for example_value in _parents_by_relation(context, step_node.id, RelationType.BINDS_TO_PARAMETER):
-                rows.append(_row("Example Value", example_value, step_node.name, "Example value binds to step parameter"))
+                rows.append(
+                    _row(
+                        "Example Value",
+                        example_value,
+                        step_node.name,
+                        "Example value binds to step parameter",
+                    )
+                )
     return rows
 
 
@@ -186,94 +216,6 @@ def _direct_relationship_rows(
         if child is not None:
             rows.append(_relationship_row("Child", edge, child))
     return rows
-
-
-def _feature_flow_diagram(
-    context: ExplorationContext,
-    feature_node: GraphNode,
-    scenario_nodes: tuple[GraphNode, ...],
-) -> str:
-    lines = ["digraph G {", "rankdir=LR;", 'node [shape=box, style="rounded"];']
-    included_ids: set[str] = set()
-
-    def add_node(node: GraphNode) -> None:
-        if node.id in included_ids:
-            return
-        included_ids.add(node.id)
-        lines.append(f'{_dot_id(node.id)} [label="{_dot_label(node)}"];')
-
-    def add_edge(source: GraphNode, target: GraphNode, label: str) -> None:
-        add_node(source)
-        add_node(target)
-        lines.append(f'{_dot_id(source.id)} -> {_dot_id(target.id)} [label="{_escape_dot(label)}"];')
-
-    add_node(feature_node)
-    for scenario_node in scenario_nodes:
-        add_edge(feature_node, scenario_node, "scenario")
-        for step_node in _children_of_type(context, scenario_node.id, NodeType.STEP):
-            add_edge(scenario_node, step_node, "step")
-            for step_definition in _children_by_relation(context, step_node.id, RelationType.MATCHES_STEP_DEFINITION):
-                add_edge(step_node, step_definition, "matches")
-                for method_node in _children_by_relation(context, step_definition.id, RelationType.IMPLEMENTED_BY):
-                    _append_method_flow_edges(context, lines, included_ids, step_definition, method_node, depth=0)
-
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def _append_method_flow_edges(
-    context: ExplorationContext,
-    lines: list[str],
-    included_ids: set[str],
-    parent_node: GraphNode,
-    method_node: GraphNode,
-    depth: int,
-    visited: set[str] | None = None,
-) -> None:
-    visited = visited or set()
-    if method_node.id in visited or depth > 4:
-        return
-    visited.add(method_node.id)
-    _append_dot_edge(lines, included_ids, parent_node, method_node, "implements")
-
-    for property_node in _children_by_relation(context, method_node.id, RelationType.USES_PROPERTY):
-        _append_dot_edge(lines, included_ids, method_node, property_node, "uses")
-        for xpath_node in _children_by_relation(context, property_node.id, RelationType.RESOLVES_TO):
-            _append_dot_edge(lines, included_ids, property_node, xpath_node, "xpath")
-
-    for called_method in _children_by_relation(context, method_node.id, RelationType.CALLS):
-        if called_method.type in IMPLEMENTATION_NODE_TYPES:
-            _append_dot_edge(lines, included_ids, method_node, called_method, "calls")
-            _append_method_flow_edges(context, lines, included_ids, method_node, called_method, depth + 1, visited)
-
-
-def _direct_relationship_diagram(context: ExplorationContext, selected_node: GraphNode) -> str:
-    lines = ["digraph G {", "rankdir=LR;", 'node [shape=box, style="rounded"];']
-    included_ids: set[str] = set()
-    for edge in context.graph.parent_edges(selected_node.id):
-        parent = context.graph.get_node(edge.source_id)
-        if parent is not None:
-            _append_dot_edge(lines, included_ids, parent, selected_node, edge.relation.value)
-    for edge in context.graph.child_edges(selected_node.id):
-        child = context.graph.get_node(edge.target_id)
-        if child is not None:
-            _append_dot_edge(lines, included_ids, selected_node, child, edge.relation.value)
-    lines.append("}")
-    return "\n".join(lines)
-
-
-def _append_dot_edge(
-    lines: list[str],
-    included_ids: set[str],
-    source: GraphNode,
-    target: GraphNode,
-    label: str,
-) -> None:
-    for node in (source, target):
-        if node.id not in included_ids:
-            included_ids.add(node.id)
-            lines.append(f'{_dot_id(node.id)} [label="{_dot_label(node)}"];')
-    lines.append(f'{_dot_id(source.id)} -> {_dot_id(target.id)} [label="{_escape_dot(label)}"];')
 
 
 def _row(node_type: str, node: GraphNode, parent: str, relationship: str) -> dict[str, object]:
@@ -356,18 +298,3 @@ def _relative_path(context: ExplorationContext, path: Path) -> str:
         return str(path.relative_to(context.index.root))
     except ValueError:
         return str(path)
-
-
-def _dot_id(node_id: str) -> str:
-    return f"n{abs(hash(node_id))}"
-
-
-def _dot_label(node: GraphNode) -> str:
-    label = f"{node.type.value}\\n{node.name}"
-    if node.line is not None:
-        label = f"{label}\\nline {node.line}"
-    return _escape_dot(label)
-
-
-def _escape_dot(value: str) -> str:
-    return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")

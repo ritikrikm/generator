@@ -13,6 +13,8 @@ from automation_repository_explorer.models.graph import GraphNode, NodeType
 from automation_repository_explorer.search.search_engine import SearchMode, SearchResult
 from automation_repository_explorer.services.explorer_service import ExplorationContext
 from automation_repository_explorer.ui.components import node_label, node_table_rows
+from automation_repository_explorer.ui.flow_graph import relationship_neighborhood
+from automation_repository_explorer.ui.interactive_graph import render_interactive_graph
 from automation_repository_explorer.ui.state import get_context, get_service
 
 
@@ -174,6 +176,8 @@ def _render_result_group(
     for item in results:
         result = item.result
         with st.expander(f"{result.score:.0f} - {node_label(result.node)}"):
+            if st.button("View Flow", key=f"view-flow-{abs(hash(result.node.id))}"):
+                st.session_state["are_search_flow_node_id"] = result.node.id
             st.dataframe(node_table_rows((result.node,)), use_container_width=True, hide_index=True)
             st.write("Matched text")
             st.code(result.matched_text)
@@ -181,6 +185,15 @@ def _render_result_group(
             if metadata:
                 st.write("Metadata")
                 st.json(metadata)
+            if st.session_state.get("are_search_flow_node_id") == result.node.id:
+                st.write("Interactive Flow")
+                graph_nodes, graph_edges = relationship_neighborhood(
+                    context,
+                    result.node.id,
+                    max_depth=5,
+                    include_examples=False,
+                )
+                render_interactive_graph(graph_nodes, graph_edges, height=620)
 
 
 def _result_table_row(context: ExplorationContext, result: SearchResult) -> dict[str, object]:

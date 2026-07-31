@@ -135,4 +135,8 @@ Search supports exact, partial, case-insensitive, and fuzzy matching. Results ca
 
 When searching all areas, results are grouped into clickable tabs such as Feature files,
 Java files, Property files, JSON files, and XML files. Use Search to find a node, then use
-Relationship Explorer to inspect its implementation flow.
+the `View Flow` action to inspect its interactive relationship network.
+
+Interactive flow diagrams support panning, zooming, dragging nodes, hover details, and
+click-to-inspect node details. They are intended to show the implementation chain around
+a selected search result, not just duplicate IDE text search.

@@ -140,3 +140,7 @@ the `View flow for result` dropdown to inspect its interactive relationship netw
 Interactive flow diagrams support panning, zooming, dragging nodes, hover details, and
 click-to-inspect node details. They are intended to show the implementation chain around
 a selected search result, not just duplicate IDE text search.
+
+The graph layout is deterministic and stage-based. Nodes are arranged left-to-right by
+relationship flow, for example Feature -> Scenario -> Step -> Step Definition -> Java/Page
+methods -> Property Key -> XPath.

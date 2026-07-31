@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import html
 import json
 from collections import defaultdict
 
@@ -73,7 +72,7 @@ def build_interactive_graph_html(
     """Build standalone HTML for an offline interactive SVG graph."""
 
     node_ids = {node.id for node in nodes}
-    graph_nodes = _layout_nodes(nodes)
+    graph_nodes = _layout_nodes(nodes, edges)
     graph_edges = [
         {
             "id": f"edge-{index}",
@@ -84,7 +83,8 @@ def build_interactive_graph_html(
         for index, edge in enumerate(edges)
         if edge.source_id in node_ids and edge.target_id in node_ids
     ]
-    graph_width = max(1100, max((node["x"] for node in graph_nodes), default=0) + NODE_WIDTH + 120)
+    graph_columns = _column_labels(graph_nodes)
+    graph_width = max(1100, max((node["x"] for node in graph_nodes), default=0) + NODE_WIDTH + 140)
     graph_height = max(height - 20, max((node["y"] for node in graph_nodes), default=0) + NODE_HEIGHT + 80)
     graph_id = f"are-svg-network-{abs(hash(tuple(sorted(node_ids))))}"
 
@@ -183,6 +183,7 @@ def build_interactive_graph_html(
       stroke-width: 3;
     }}
     .edge-line {{
+      fill: none;
       stroke: #94a3b8;
       stroke-width: 1.6;
       marker-end: url(#arrow);
@@ -194,6 +195,12 @@ def build_interactive_graph_html(
       stroke: #020617;
       stroke-width: 3px;
     }}
+    .column-label {{
+      fill: #93c5fd;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }}
   </style>
 </head>
 <body>
@@ -204,7 +211,8 @@ def build_interactive_graph_html(
         <button type="button" id="{graph_id}-zoom-out">Zoom -</button>
         <button type="button" id="{graph_id}-reset">Reset</button>
       </div>
-      <svg id="{graph_id}" class="canvas" width="100%" height="100%" viewBox="0 0 {graph_width} {graph_height}">
+      <svg id="{graph_id}" class="canvas" width="100%" height="100%"
+        viewBox="0 0 {graph_width} {graph_height}">
         <defs>
           <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
             markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -216,12 +224,15 @@ def build_interactive_graph_html(
     </div>
     <aside id="{graph_id}-details" class="details">
       <h3>Node Details</h3>
-      <p class="hint">Offline interactive graph. Drag nodes, pan background, scroll to zoom, or click Reset.</p>
+      <p class="hint">
+        Offline interactive graph. Drag nodes, pan background, scroll to zoom, or click Reset.
+      </p>
     </aside>
   </div>
   <script>
     const graphNodes = {json.dumps(graph_nodes)};
     const graphEdges = {json.dumps(graph_edges)};
+    const graphColumns = {json.dumps(graph_columns)};
     const svg = document.getElementById("{graph_id}");
     const viewport = document.getElementById("{graph_id}-viewport");
     const details = document.getElementById("{graph_id}-details");
@@ -256,18 +267,29 @@ def build_interactive_graph_html(
     function render() {{
       viewport.innerHTML = "";
       const edgeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      const labelLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
       const nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      viewport.appendChild(labelLayer);
       viewport.appendChild(edgeLayer);
       viewport.appendChild(nodeLayer);
+
+      for (const column of graphColumns) {{
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.classList.add("column-label");
+        label.setAttribute("x", column.x);
+        label.setAttribute("y", 24);
+        label.textContent = column.label;
+        labelLayer.appendChild(label);
+      }}
 
       for (const edge of graphEdges) {{
         const source = nodeById.get(edge.source);
         const target = nodeById.get(edge.target);
         if (!source || !target) continue;
-        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-        line.classList.add("edge-line");
-        line.dataset.edgeId = edge.id;
-        edgeLayer.appendChild(line);
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.classList.add("edge-line");
+        path.dataset.edgeId = edge.id;
+        edgeLayer.appendChild(path);
 
         const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
         label.classList.add("edge-label");
@@ -324,18 +346,19 @@ def build_interactive_graph_html(
       for (const edge of graphEdges) {{
         const source = nodeById.get(edge.source);
         const target = nodeById.get(edge.target);
-        const line = viewport.querySelector(`[data-edge-id="${{edge.id}}"]`);
+        const path = viewport.querySelector(`[data-edge-id="${{edge.id}}"]`);
         const label = viewport.querySelector(`[data-edge-label-id="${{edge.id}}"]`);
-        if (!source || !target || !line || !label) continue;
+        if (!source || !target || !path || !label) continue;
 
         const x1 = source.x + source.width;
         const y1 = source.y + source.height / 2;
         const x2 = target.x;
         const y2 = target.y + target.height / 2;
-        line.setAttribute("x1", x1);
-        line.setAttribute("y1", y1);
-        line.setAttribute("x2", x2);
-        line.setAttribute("y2", y2);
+        const bend = Math.max(50, Math.abs(x2 - x1) / 2);
+        path.setAttribute(
+          "d",
+          `M ${{x1}} ${{y1}} C ${{x1 + bend}} ${{y1}}, ${{x2 - bend}} ${{y2}}, ${{x2}} ${{y2}}`
+        );
         label.setAttribute("x", (x1 + x2) / 2);
         label.setAttribute("y", (y1 + y2) / 2 - 4);
       }}
@@ -418,22 +441,82 @@ def build_interactive_graph_html(
 """
 
 
-def _layout_nodes(nodes: tuple[GraphNode, ...]) -> list[dict[str, object]]:
+def _layout_nodes(nodes: tuple[GraphNode, ...], edges: tuple[GraphEdge, ...]) -> list[dict[str, object]]:
+    ranks = _rank_nodes(nodes, edges)
     layers: dict[int, list[GraphNode]] = defaultdict(list)
-    for node in sorted(nodes, key=lambda item: (NODE_TYPE_LAYER.get(item.type, 10), item.name)):
-        layers[NODE_TYPE_LAYER.get(node.type, 10)].append(node)
+    for node in nodes:
+        layers[ranks[node.id]].append(node)
 
     graph_nodes: list[dict[str, object]] = []
+    y_by_id: dict[str, int] = {}
     for layer_index, layer in sorted(layers.items()):
-        for row_index, node in enumerate(layer):
+        ordered_layer = _order_layer(layer, edges, y_by_id)
+        for row_index, node in enumerate(ordered_layer):
+            y_position = 54 + row_index * 96
+            y_by_id[node.id] = y_position
             graph_nodes.append(
                 _network_node(
                     node,
                     x=40 + layer_index * 270,
-                    y=40 + row_index * 92,
+                    y=y_position,
                 )
             )
     return graph_nodes
+
+
+def _rank_nodes(nodes: tuple[GraphNode, ...], edges: tuple[GraphEdge, ...]) -> dict[str, int]:
+    node_ids = {node.id for node in nodes}
+    ranks = {node.id: NODE_TYPE_LAYER.get(node.type, 10) for node in nodes}
+    relevant_edges = [
+        edge
+        for edge in edges
+        if edge.source_id in node_ids and edge.target_id in node_ids
+    ]
+
+    for _ in range(len(nodes)):
+        changed = False
+        for edge in relevant_edges:
+            source_rank = ranks[edge.source_id]
+            target_rank = ranks[edge.target_id]
+            if target_rank <= source_rank:
+                ranks[edge.target_id] = source_rank + 1
+                changed = True
+        if not changed:
+            break
+
+    compacted = {rank: index for index, rank in enumerate(sorted(set(ranks.values())))}
+    return {node_id: compacted[rank] for node_id, rank in ranks.items()}
+
+
+def _order_layer(
+    layer: list[GraphNode],
+    edges: tuple[GraphEdge, ...],
+    y_by_id: dict[str, int],
+) -> list[GraphNode]:
+    parent_y: dict[str, list[int]] = defaultdict(list)
+    layer_node_ids = {node.id for node in layer}
+    for edge in edges:
+        if edge.target_id in layer_node_ids and edge.source_id in y_by_id:
+            parent_y[edge.target_id].append(y_by_id[edge.source_id])
+    return sorted(
+        layer,
+        key=lambda node: (
+            sum(parent_y[node.id]) / len(parent_y[node.id]) if parent_y[node.id] else 10_000,
+            node.line or 0,
+            node.type.value,
+            node.name,
+        ),
+    )
+
+
+def _column_labels(graph_nodes: list[dict[str, object]]) -> list[dict[str, object]]:
+    labels_by_x: dict[int, set[str]] = defaultdict(set)
+    for node in graph_nodes:
+        labels_by_x[int(node["x"])].add(str(node["type"]))
+    return [
+        {"x": x, "label": " / ".join(sorted(labels))}
+        for x, labels in sorted(labels_by_x.items())
+    ]
 
 
 def _network_node(node: GraphNode, *, x: int, y: int) -> dict[str, object]:

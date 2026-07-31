@@ -8,7 +8,7 @@ from pathlib import Path
 from automation_repository_explorer.models.graph import NodeType
 from automation_repository_explorer.services.explorer_service import ExplorerService
 from automation_repository_explorer.ui.flow_graph import feature_flow_graph, relationship_neighborhood
-from automation_repository_explorer.ui.interactive_graph import build_interactive_graph_html
+from automation_repository_explorer.ui.interactive_graph import build_interactive_graph_html, _layout_nodes
 
 
 class InteractiveFlowTests(unittest.TestCase):
@@ -17,7 +17,11 @@ class InteractiveFlowTests(unittest.TestCase):
     def test_feature_flow_graph_contains_implementation_and_locator_nodes(self) -> None:
         context = ExplorerService().explore(Path("sample_repo"))
         feature = next(node for node in context.graph.nodes if node.type == NodeType.FEATURE)
-        scenarios = tuple(node for node in context.graph.children(feature.id) if node.type == NodeType.SCENARIO)
+        scenarios = tuple(
+            node
+            for node in context.graph.children(feature.id)
+            if node.type == NodeType.SCENARIO
+        )
 
         nodes, edges = feature_flow_graph(context, feature, scenarios[:1])
         node_types = {node.type for node in nodes}
@@ -39,6 +43,24 @@ class InteractiveFlowTests(unittest.TestCase):
         self.assertNotIn("unpkg.com", rendered)
         self.assertIn("<svg", rendered)
         self.assertIn("Node Details", rendered)
+
+    def test_interactive_layout_orders_connected_nodes_left_to_right(self) -> None:
+        context = ExplorerService().explore(Path("sample_repo"))
+        feature = next(node for node in context.graph.nodes if node.type == NodeType.FEATURE)
+        scenarios = tuple(
+            node
+            for node in context.graph.children(feature.id)
+            if node.type == NodeType.SCENARIO
+        )
+        nodes, edges = feature_flow_graph(context, feature, scenarios[:1])
+
+        rendered_nodes = _layout_nodes(nodes, edges)
+        x_by_id = {str(node["id"]): int(node["x"]) for node in rendered_nodes}
+
+        self.assertTrue(edges)
+        self.assertTrue(
+            all(x_by_id[edge.source_id] < x_by_id[edge.target_id] for edge in edges)
+        )
 
 
 if __name__ == "__main__":

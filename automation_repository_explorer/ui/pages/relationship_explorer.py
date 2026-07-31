@@ -67,8 +67,8 @@ def _render_feature_file_flow(
         st.info("This feature file has no parsed scenarios.")
         return
 
-    scenario_options = {"All scenarios in this feature": None}
-    scenario_options.update({node_label(node): node for node in scenario_nodes})
+    scenario_options = {node_label(node): node for node in scenario_nodes}
+    scenario_options["All scenarios in this feature"] = None
     selected_scenario = scenario_options[st.selectbox("Scenario", list(scenario_options))]
     scenarios_to_render = scenario_nodes if selected_scenario is None else (selected_scenario,)
 

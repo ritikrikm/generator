@@ -92,7 +92,7 @@ def _render_feature_file_flow(
     st.write("Flow Table")
     st.dataframe(flow_rows, use_container_width=True, hide_index=True)
 
-    st.write("Interactive Flow")
+    st.write("Offline Interactive Flow")
     graph_nodes, graph_edges = feature_flow_graph(
         context,
         selected_feature,
@@ -133,7 +133,7 @@ def _render_non_feature_file_flow(
     rows = _direct_relationship_rows(context, selected_node)
     st.dataframe(rows, use_container_width=True, hide_index=True)
 
-    st.write("Interactive Relationships")
+    st.write("Offline Interactive Relationships")
     graph_nodes, graph_edges = relationship_neighborhood(
         context,
         selected_node.id,

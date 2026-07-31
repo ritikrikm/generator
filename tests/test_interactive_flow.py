@@ -35,7 +35,9 @@ class InteractiveFlowTests(unittest.TestCase):
         nodes, edges = relationship_neighborhood(context, property_node.id)
         rendered = build_interactive_graph_html(nodes, edges)
 
-        self.assertIn("vis-network", rendered)
+        self.assertNotIn("https://", rendered)
+        self.assertNotIn("unpkg.com", rendered)
+        self.assertIn("<svg", rendered)
         self.assertIn("Node Details", rendered)
 
 

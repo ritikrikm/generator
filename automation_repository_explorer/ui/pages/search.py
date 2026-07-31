@@ -173,11 +173,29 @@ def _render_result_group(
     table_rows = [_result_table_row(context, item.result) for item in results]
     st.dataframe(table_rows, use_container_width=True, hide_index=True)
 
+    flow_options = {
+        f"{index + 1}. {item.result.node.type.value}: {item.result.node.name}": item.result.node.id
+        for index, item in enumerate(results[:50])
+    }
+    selected_flow_label = st.selectbox(
+        "View flow for result",
+        ["Select a result"] + list(flow_options),
+        key=f"flow-select-{area.value}",
+    )
+    if selected_flow_label != "Select a result":
+        selected_node_id = flow_options[selected_flow_label]
+        st.write("Offline Interactive Flow")
+        graph_nodes, graph_edges = relationship_neighborhood(
+            context,
+            selected_node_id,
+            max_depth=5,
+            include_examples=False,
+        )
+        render_interactive_graph(graph_nodes, graph_edges, height=620)
+
     for item in results:
         result = item.result
         with st.expander(f"{result.score:.0f} - {node_label(result.node)}"):
-            if st.button("View Flow", key=f"view-flow-{abs(hash(result.node.id))}"):
-                st.session_state["are_search_flow_node_id"] = result.node.id
             st.dataframe(node_table_rows((result.node,)), use_container_width=True, hide_index=True)
             st.write("Matched text")
             st.code(result.matched_text)
@@ -185,15 +203,6 @@ def _render_result_group(
             if metadata:
                 st.write("Metadata")
                 st.json(metadata)
-            if st.session_state.get("are_search_flow_node_id") == result.node.id:
-                st.write("Interactive Flow")
-                graph_nodes, graph_edges = relationship_neighborhood(
-                    context,
-                    result.node.id,
-                    max_depth=5,
-                    include_examples=False,
-                )
-                render_interactive_graph(graph_nodes, graph_edges, height=620)
 
 
 def _result_table_row(context: ExplorationContext, result: SearchResult) -> dict[str, object]:

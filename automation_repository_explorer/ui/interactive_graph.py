@@ -1,9 +1,10 @@
-"""Interactive graph rendering for Streamlit."""
+"""Offline interactive graph rendering for Streamlit."""
 
 from __future__ import annotations
 
 import html
 import json
+from collections import defaultdict
 
 import streamlit.components.v1 as components
 
@@ -25,6 +26,25 @@ NODE_COLORS = {
     NodeType.FILE: "#334155",
 }
 
+NODE_TYPE_LAYER = {
+    NodeType.FILE: 0,
+    NodeType.FEATURE: 1,
+    NodeType.SCENARIO: 2,
+    NodeType.STEP: 3,
+    NodeType.STEP_DEFINITION: 4,
+    NodeType.JAVA_CLASS: 5,
+    NodeType.JAVA_METHOD: 5,
+    NodeType.PAGE_OBJECT: 6,
+    NodeType.WRAPPER_METHOD: 7,
+    NodeType.PROPERTY_KEY: 8,
+    NodeType.XPATH: 9,
+    NodeType.EXAMPLE_VALUE: 3,
+    NodeType.STRING_LITERAL: 8,
+}
+
+NODE_WIDTH = 220
+NODE_HEIGHT = 58
+
 
 def render_interactive_graph(
     nodes: tuple[GraphNode, ...],
@@ -32,7 +52,7 @@ def render_interactive_graph(
     *,
     height: int = 650,
 ) -> None:
-    """Render an interactive relationship graph."""
+    """Render an offline interactive relationship graph."""
 
     if not nodes:
         return
@@ -50,30 +70,29 @@ def build_interactive_graph_html(
     *,
     height: int = 650,
 ) -> str:
-    """Build standalone HTML for an interactive vis-network graph."""
+    """Build standalone HTML for an offline interactive SVG graph."""
 
     node_ids = {node.id for node in nodes}
-    network_nodes = [_network_node(node) for node in nodes]
-    network_edges = [
+    graph_nodes = _layout_nodes(nodes)
+    graph_edges = [
         {
-            "from": edge.source_id,
-            "to": edge.target_id,
+            "id": f"edge-{index}",
+            "source": edge.source_id,
+            "target": edge.target_id,
             "label": edge.relation.value,
-            "arrows": "to",
-            "font": {"align": "middle", "size": 11},
-            "color": {"color": "#94a3b8", "highlight": "#0f172a"},
         }
-        for edge in edges
+        for index, edge in enumerate(edges)
         if edge.source_id in node_ids and edge.target_id in node_ids
     ]
-    graph_id = f"are-network-{abs(hash(tuple(sorted(node_ids))))}"
+    graph_width = max(1100, max((node["x"] for node in graph_nodes), default=0) + NODE_WIDTH + 120)
+    graph_height = max(height - 20, max((node["y"] for node in graph_nodes), default=0) + NODE_HEIGHT + 80)
+    graph_id = f"are-svg-network-{abs(hash(tuple(sorted(node_ids))))}"
 
     return f"""
 <!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
   <style>
     body {{
       margin: 0;
@@ -83,20 +102,23 @@ def build_interactive_graph_html(
     }}
     .layout {{
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 320px;
+      grid-template-columns: minmax(0, 1fr) 330px;
       gap: 12px;
       height: {height - 12}px;
       padding: 6px;
       box-sizing: border-box;
     }}
-    #{graph_id} {{
-      height: 100%;
+    .canvas {{
       border: 1px solid #334155;
       border-radius: 8px;
       background: #020617;
+      overflow: hidden;
+      cursor: grab;
+    }}
+    .canvas.dragging {{
+      cursor: grabbing;
     }}
     .details {{
-      height: 100%;
       border: 1px solid #334155;
       border-radius: 8px;
       background: #111827;
@@ -109,9 +131,6 @@ def build_interactive_graph_html(
       margin: 0 0 8px;
       font-size: 15px;
       color: #f8fafc;
-    }}
-    .details dl {{
-      margin: 0;
     }}
     .details dt {{
       color: #93c5fd;
@@ -127,47 +146,92 @@ def build_interactive_graph_html(
       color: #cbd5e1;
       line-height: 1.4;
     }}
+    .toolbar {{
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      display: flex;
+      gap: 6px;
+      z-index: 3;
+    }}
+    .toolbar button {{
+      border: 1px solid #475569;
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 6px;
+      padding: 5px 9px;
+      cursor: pointer;
+      font-size: 12px;
+    }}
+    .svg-wrap {{
+      position: relative;
+      height: 100%;
+    }}
+    .node rect {{
+      stroke: #e2e8f0;
+      stroke-width: 1;
+      rx: 8;
+      filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.45));
+    }}
+    .node text {{
+      fill: #f8fafc;
+      font-size: 12px;
+      pointer-events: none;
+    }}
+    .node.selected rect {{
+      stroke: #f97316;
+      stroke-width: 3;
+    }}
+    .edge-line {{
+      stroke: #94a3b8;
+      stroke-width: 1.6;
+      marker-end: url(#arrow);
+    }}
+    .edge-label {{
+      fill: #cbd5e1;
+      font-size: 10px;
+      paint-order: stroke;
+      stroke: #020617;
+      stroke-width: 3px;
+    }}
   </style>
 </head>
 <body>
   <div class="layout">
-    <div id="{graph_id}"></div>
+    <div class="svg-wrap">
+      <div class="toolbar">
+        <button type="button" id="{graph_id}-zoom-in">Zoom +</button>
+        <button type="button" id="{graph_id}-zoom-out">Zoom -</button>
+        <button type="button" id="{graph_id}-reset">Reset</button>
+      </div>
+      <svg id="{graph_id}" class="canvas" width="100%" height="100%" viewBox="0 0 {graph_width} {graph_height}">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+            markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"></path>
+          </marker>
+        </defs>
+        <g id="{graph_id}-viewport"></g>
+      </svg>
+    </div>
     <aside id="{graph_id}-details" class="details">
       <h3>Node Details</h3>
-      <p class="hint">Click a node to inspect its type, file, line, and value. Drag nodes to rearrange. Scroll or pinch to zoom.</p>
+      <p class="hint">Offline interactive graph. Drag nodes, pan background, scroll to zoom, or click Reset.</p>
     </aside>
   </div>
   <script>
-    const nodes = new vis.DataSet({json.dumps(network_nodes)});
-    const edges = new vis.DataSet({json.dumps(network_edges)});
-    const container = document.getElementById("{graph_id}");
+    const graphNodes = {json.dumps(graph_nodes)};
+    const graphEdges = {json.dumps(graph_edges)};
+    const svg = document.getElementById("{graph_id}");
+    const viewport = document.getElementById("{graph_id}-viewport");
     const details = document.getElementById("{graph_id}-details");
-    const network = new vis.Network(container, {{ nodes, edges }}, {{
-      interaction: {{
-        hover: true,
-        navigationButtons: true,
-        keyboard: true,
-        multiselect: true
-      }},
-      physics: {{
-        solver: "forceAtlas2Based",
-        stabilization: {{ iterations: 180 }}
-      }},
-      layout: {{
-        improvedLayout: true
-      }},
-      nodes: {{
-        shape: "box",
-        margin: 10,
-        borderWidth: 1,
-        shadow: true,
-        font: {{ color: "#f8fafc", size: 13, face: "Inter, Segoe UI, sans-serif" }}
-      }},
-      edges: {{
-        smooth: {{ type: "dynamic" }},
-        width: 1.5
-      }}
-    }});
+    const nodeById = new Map(graphNodes.map(node => [node.id, node]));
+    let scale = 1;
+    let panX = 0;
+    let panY = 0;
+    let activeNode = null;
+    let panning = false;
+    let dragStart = null;
 
     function escapeHtml(value) {{
       return String(value ?? "")
@@ -177,67 +241,221 @@ def build_interactive_graph_html(
         .replaceAll('"', "&quot;");
     }}
 
-    function renderDetails(node) {{
+    function pointFromEvent(event) {{
+      const point = svg.createSVGPoint();
+      point.x = event.clientX;
+      point.y = event.clientY;
+      const transformed = point.matrixTransform(svg.getScreenCTM().inverse());
+      return {{ x: (transformed.x - panX) / scale, y: (transformed.y - panY) / scale }};
+    }}
+
+    function applyTransform() {{
+      viewport.setAttribute("transform", `translate(${{panX}}, ${{panY}}) scale(${{scale}})`);
+    }}
+
+    function render() {{
+      viewport.innerHTML = "";
+      const edgeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      const nodeLayer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+      viewport.appendChild(edgeLayer);
+      viewport.appendChild(nodeLayer);
+
+      for (const edge of graphEdges) {{
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        if (!source || !target) continue;
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.classList.add("edge-line");
+        line.dataset.edgeId = edge.id;
+        edgeLayer.appendChild(line);
+
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.classList.add("edge-label");
+        label.dataset.edgeLabelId = edge.id;
+        label.textContent = edge.label;
+        edgeLayer.appendChild(label);
+      }}
+
+      for (const node of graphNodes) {{
+        const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        group.classList.add("node");
+        group.dataset.nodeId = node.id;
+        group.setAttribute("transform", `translate(${{node.x}}, ${{node.y}})`);
+
+        const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+        rect.setAttribute("width", node.width);
+        rect.setAttribute("height", node.height);
+        rect.setAttribute("fill", node.color);
+        group.appendChild(rect);
+
+        const title = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        title.setAttribute("x", 10);
+        title.setAttribute("y", 20);
+        title.setAttribute("font-weight", "700");
+        title.textContent = node.type;
+        group.appendChild(title);
+
+        const name = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        name.setAttribute("x", 10);
+        name.setAttribute("y", 40);
+        name.textContent = node.label;
+        group.appendChild(name);
+
+        group.addEventListener("mousedown", event => {{
+          event.stopPropagation();
+          activeNode = node;
+          dragStart = pointFromEvent(event);
+          showDetails(node);
+          selectNode(group);
+        }});
+        group.addEventListener("click", event => {{
+          event.stopPropagation();
+          showDetails(node);
+          selectNode(group);
+        }});
+        nodeLayer.appendChild(group);
+      }}
+
+      updateEdges();
+      applyTransform();
+    }}
+
+    function updateEdges() {{
+      for (const edge of graphEdges) {{
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        const line = viewport.querySelector(`[data-edge-id="${{edge.id}}"]`);
+        const label = viewport.querySelector(`[data-edge-label-id="${{edge.id}}"]`);
+        if (!source || !target || !line || !label) continue;
+
+        const x1 = source.x + source.width;
+        const y1 = source.y + source.height / 2;
+        const x2 = target.x;
+        const y2 = target.y + target.height / 2;
+        line.setAttribute("x1", x1);
+        line.setAttribute("y1", y1);
+        line.setAttribute("x2", x2);
+        line.setAttribute("y2", y2);
+        label.setAttribute("x", (x1 + x2) / 2);
+        label.setAttribute("y", (y1 + y2) / 2 - 4);
+      }}
+    }}
+
+    function selectNode(group) {{
+      viewport.querySelectorAll(".node").forEach(node => node.classList.remove("selected"));
+      group.classList.add("selected");
+    }}
+
+    function showDetails(node) {{
       details.innerHTML = `
         <h3>${{escapeHtml(node.type)}}</h3>
         <dl>
           <dt>Name</dt><dd>${{escapeHtml(node.fullName)}}</dd>
-          <dt>File</dt><dd>${{escapeHtml(node.file || "")}}</dd>
-          <dt>Line</dt><dd>${{escapeHtml(node.line || "")}}</dd>
-          <dt>Value</dt><dd>${{escapeHtml(node.value || "")}}</dd>
+          <dt>File</dt><dd>${{escapeHtml(node.file)}}</dd>
+          <dt>Line</dt><dd>${{escapeHtml(node.line)}}</dd>
+          <dt>Value</dt><dd>${{escapeHtml(node.value)}}</dd>
         </dl>
       `;
     }}
 
-    network.on("selectNode", function(params) {{
-      const node = nodes.get(params.nodes[0]);
-      renderDetails(node);
+    svg.addEventListener("mousedown", event => {{
+      panning = true;
+      dragStart = {{ x: event.clientX, y: event.clientY, panX, panY }};
+      svg.classList.add("dragging");
     }});
+
+    window.addEventListener("mousemove", event => {{
+      if (activeNode && dragStart) {{
+        const point = pointFromEvent(event);
+        activeNode.x += point.x - dragStart.x;
+        activeNode.y += point.y - dragStart.y;
+        dragStart = point;
+        const group = viewport.querySelector(`[data-node-id="${{CSS.escape(activeNode.id)}}"]`);
+        if (group) group.setAttribute("transform", `translate(${{activeNode.x}}, ${{activeNode.y}})`);
+        updateEdges();
+        return;
+      }}
+      if (panning && dragStart) {{
+        panX = dragStart.panX + event.clientX - dragStart.x;
+        panY = dragStart.panY + event.clientY - dragStart.y;
+        applyTransform();
+      }}
+    }});
+
+    window.addEventListener("mouseup", () => {{
+      activeNode = null;
+      panning = false;
+      dragStart = null;
+      svg.classList.remove("dragging");
+    }});
+
+    svg.addEventListener("wheel", event => {{
+      event.preventDefault();
+      const zoom = event.deltaY < 0 ? 1.1 : 0.9;
+      scale = Math.min(2.5, Math.max(0.25, scale * zoom));
+      applyTransform();
+    }}, {{ passive: false }});
+
+    document.getElementById("{graph_id}-zoom-in").addEventListener("click", () => {{
+      scale = Math.min(2.5, scale * 1.15);
+      applyTransform();
+    }});
+    document.getElementById("{graph_id}-zoom-out").addEventListener("click", () => {{
+      scale = Math.max(0.25, scale * 0.85);
+      applyTransform();
+    }});
+    document.getElementById("{graph_id}-reset").addEventListener("click", () => {{
+      scale = 1;
+      panX = 0;
+      panY = 0;
+      applyTransform();
+    }});
+
+    render();
   </script>
 </body>
 </html>
 """
 
 
-def _network_node(node: GraphNode) -> dict[str, object]:
+def _layout_nodes(nodes: tuple[GraphNode, ...]) -> list[dict[str, object]]:
+    layers: dict[int, list[GraphNode]] = defaultdict(list)
+    for node in sorted(nodes, key=lambda item: (NODE_TYPE_LAYER.get(item.type, 10), item.name)):
+        layers[NODE_TYPE_LAYER.get(node.type, 10)].append(node)
+
+    graph_nodes: list[dict[str, object]] = []
+    for layer_index, layer in sorted(layers.items()):
+        for row_index, node in enumerate(layer):
+            graph_nodes.append(
+                _network_node(
+                    node,
+                    x=40 + layer_index * 270,
+                    y=40 + row_index * 92,
+                )
+            )
+    return graph_nodes
+
+
+def _network_node(node: GraphNode, *, x: int, y: int) -> dict[str, object]:
     value = node.metadata.get("value", "")
     return {
         "id": node.id,
         "label": _short_label(node),
-        "title": _title(node),
         "type": node.type.value,
         "fullName": node.name,
         "file": str(node.file_path) if node.file_path else "",
         "line": node.line or "",
         "value": value,
-        "color": {
-            "background": NODE_COLORS.get(node.type, "#475569"),
-            "border": "#e2e8f0",
-            "highlight": {
-                "background": "#f97316",
-                "border": "#fff7ed",
-            },
-        },
+        "color": NODE_COLORS.get(node.type, "#475569"),
+        "x": x,
+        "y": y,
+        "width": NODE_WIDTH,
+        "height": NODE_HEIGHT,
     }
 
 
 def _short_label(node: GraphNode) -> str:
-    name = node.name
-    if len(name) > 54:
-        name = f"{name[:51]}..."
-    return f"{node.type.value}\n{name}"
-
-
-def _title(node: GraphNode) -> str:
-    lines = [
-        f"<strong>{html.escape(node.type.value)}</strong>",
-        html.escape(node.name),
-    ]
-    if node.file_path is not None:
-        lines.append(f"File: {html.escape(str(node.file_path))}")
-    if node.line is not None:
-        lines.append(f"Line: {node.line}")
-    value = node.metadata.get("value")
-    if value:
-        lines.append(f"Value: {html.escape(str(value))}")
-    return "<br>".join(lines)
+    name = node.name.replace("\n", " ")
+    if len(name) > 34:
+        name = f"{name[:31]}..."
+    return name

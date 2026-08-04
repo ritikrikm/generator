@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from automation_repository_explorer.core.exceptions import ParserError
 from automation_repository_explorer.models.domain import PropertyEntry, SourceLocation
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
+from automation_repository_explorer.parsers.text_reader import read_text_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -21,10 +21,7 @@ class PropertyParser(RepositoryParser[PropertyEntry]):
 
     def parse(self, file_path: Path) -> ParseResult[PropertyEntry]:
         LOGGER.debug("Parsing properties file %s", file_path)
-        try:
-            lines = file_path.read_text(encoding="utf-8-sig").splitlines()
-        except OSError as exc:
-            raise ParserError(f"Unable to read properties file {file_path}") from exc
+        lines = read_text_file(file_path, "properties").splitlines()
 
         entries: list[PropertyEntry] = []
         continuation = ""

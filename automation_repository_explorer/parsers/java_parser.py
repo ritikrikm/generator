@@ -6,7 +6,6 @@ import logging
 import re
 from pathlib import Path
 
-from automation_repository_explorer.core.exceptions import ParserError
 from automation_repository_explorer.models.domain import (
     JavaClass,
     JavaMethod,
@@ -14,6 +13,7 @@ from automation_repository_explorer.models.domain import (
     StepDefinition,
 )
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
+from automation_repository_explorer.parsers.text_reader import read_text_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -67,10 +67,7 @@ class JavaParser(RepositoryParser[JavaClass]):
 
     def parse(self, file_path: Path) -> ParseResult[JavaClass]:
         LOGGER.debug("Parsing Java file %s", file_path)
-        try:
-            source = file_path.read_text(encoding="utf-8-sig")
-        except OSError as exc:
-            raise ParserError(f"Unable to read Java file {file_path}") from exc
+        source = read_text_file(file_path, "Java")
 
         package_match = self._PACKAGE_RE.search(source)
         package_name = package_match.group("package") if package_match else ""

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from automation_repository_explorer.models.domain import PropertyEntry, SourceLocation
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
+from automation_repository_explorer.parsers.text_reader import read_text_file
 
 
 class TextResourceParser(RepositoryParser[PropertyEntry]):
@@ -16,7 +17,8 @@ class TextResourceParser(RepositoryParser[PropertyEntry]):
         return frozenset({".json", ".xml"})
 
     def parse(self, file_path: Path) -> ParseResult[PropertyEntry]:
-        lines = file_path.read_text(encoding="utf-8-sig").splitlines()
+        file_kind = file_path.suffix.lower().lstrip(".") or "text"
+        lines = read_text_file(file_path, file_kind).splitlines()
         entries = tuple(
             PropertyEntry(
                 key=f"{file_path.name}:{line_number}",

@@ -15,6 +15,7 @@ from automation_repository_explorer.models.domain import (
     Step,
 )
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
+from automation_repository_explorer.parsers.text_reader import read_text_file
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,10 +37,7 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
 
     def parse(self, file_path: Path) -> ParseResult[FeatureDocument]:
         LOGGER.debug("Parsing feature file %s", file_path)
-        try:
-            lines = file_path.read_text(encoding="utf-8-sig").splitlines()
-        except OSError as exc:
-            raise ParserError(f"Unable to read feature file {file_path}") from exc
+        lines = read_text_file(file_path, "feature").splitlines()
 
         feature_name = ""
         feature_line = 1

@@ -47,6 +47,18 @@ pytest
 python run_local.py
 ```
 
+If dependencies are not installed yet, use:
+
+```bash
+python run_local.py --install
+```
+
+To only check whether the local machine is ready:
+
+```bash
+python run_local.py --check
+```
+
 In the sidebar, paste the local folder path of the automation repository.
 
 For the included sample repository, scan:

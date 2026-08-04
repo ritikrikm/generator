@@ -1,0 +1,4 @@
+<publisher>
+  <reportName>Batman-Automation</reportName>
+  <outputFolder>target/HTMLReport</outputFolder>
+</publisher>

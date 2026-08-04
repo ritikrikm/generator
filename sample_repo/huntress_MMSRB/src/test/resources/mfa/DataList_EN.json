@@ -1,0 +1,6 @@
+{
+  "users": {
+    "RETAIL_PBAUserId": "retail.pba.user@example.test",
+    "RETAIL_BMUserId": "retail.bm.user@example.test"
+  }
+}

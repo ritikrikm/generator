@@ -32,8 +32,9 @@ semantic search, or machine learning.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt
 ```
+
+No third-party package is required to run the local UI. Python 3.12+ is enough.
 
 ## Run Tests
 
@@ -45,12 +46,6 @@ pytest
 
 ```bash
 python run_local.py
-```
-
-If dependencies are not installed yet, use:
-
-```bash
-python run_local.py --install
 ```
 
 To only check whether the local machine is ready:
@@ -67,18 +62,11 @@ For the included sample repository, scan:
 sample_repo
 ```
 
-You can also run Streamlit directly if needed:
-
-```bash
-streamlit run automation_repository_explorer/ui/app.py
-```
-
 ## Local-Only Usage
 
 - Run ARE on the same machine where the automation repository exists.
 - Use the local repository folder path. ZIP upload and cloud scanning are not required.
-- Streamlit Cloud cannot read `C:\...` or `/Users/...` paths from your laptop. Those paths
-  only work when the app is running locally on that same laptop.
+- ARE does not require any third-party runtime package.
 - ARE is read-only for the target repository.
 
 ## Project Structure
@@ -92,7 +80,7 @@ automation_repository_explorer/
   graph/
   search/
   services/
-  ui/
+  local_web_app.py
 tests/
 sample_repo/
 docs/
@@ -109,5 +97,5 @@ docs/
 - Exact, partial, case-insensitive, and fuzzy search
 - Reverse mapping
 - Scenario Outline example value mapping
-- Local Streamlit UI
+- Local standard-library web UI
 - Unit tests

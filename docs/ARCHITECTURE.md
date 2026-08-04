@@ -39,7 +39,7 @@ future tree-sitter adapter can be added without changing graph/search/UI layers.
 
 `RepositoryIndexer` coordinates scanning and parsing.
 
-`ExplorerService` is the application facade used by tests and Streamlit.
+`ExplorerService` is the application facade used by tests and the local web UI.
 
 ### Graph
 
@@ -55,7 +55,7 @@ Property Key -> Wrapper -> Page -> Step Definition -> Step -> Scenario -> Featur
 - exact
 - partial
 - case-insensitive
-- fuzzy via RapidFuzz
+- fuzzy via Python standard-library similarity fallback
 
 ## Extension Points
 

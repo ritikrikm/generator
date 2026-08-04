@@ -6,11 +6,6 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from enum import StrEnum
 
-try:
-    from rapidfuzz import fuzz
-except ImportError:  # pragma: no cover - exercised only without optional dependency
-    fuzz = None  # type: ignore[assignment]
-
 from automation_repository_explorer.graph.repository_graph import RepositoryGraph
 from automation_repository_explorer.models.graph import GraphNode, NodeType
 
@@ -92,8 +87,6 @@ class SearchEngine:
         if mode == SearchMode.CASE_INSENSITIVE:
             return 100.0 if query.lower() in candidate.lower() else 0.0
         if mode == SearchMode.FUZZY:
-            if fuzz is not None:
-                return float(fuzz.partial_ratio(query.lower(), candidate.lower()))
             query_lower = query.lower()
             candidate_lower = candidate.lower()
             if query_lower in candidate_lower:

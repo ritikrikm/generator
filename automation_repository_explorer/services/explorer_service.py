@@ -37,7 +37,7 @@ class ExplorationContext:
 
 
 class ExplorerService:
-    """Facade used by Streamlit UI and tests."""
+    """Facade used by local UI and tests."""
 
     def __init__(
         self,

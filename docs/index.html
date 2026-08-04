@@ -109,10 +109,11 @@
 
       <section>
         <span class="badge">Python 3.12+</span>
-        <span class="badge">Local Streamlit</span>
+        <span class="badge">Local Web UI</span>
         <span class="badge">Static Analysis</span>
         <span class="badge">Read Only</span>
         <span class="badge">No LLMs</span>
+        <span class="badge">No Third-Party Runtime</span>
         <span class="badge">No Vector DB</span>
       </section>
 
@@ -130,13 +131,13 @@
       <h2>Run Locally</h2>
       <pre>python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-dev.txt
 python run_local.py</pre>
 
       <p>
         Run ARE on the same laptop or workstation where the automation repository exists.
         Paste the repository folder path in the sidebar and scan it. ARE does not upload,
-        copy, deploy, or modify the repository.
+        copy, deploy, or modify the repository. The local UI uses Python's standard library,
+        so third-party UI package approval is not required.
       </p>
 
       <h2>Version 1 Features</h2>
@@ -155,15 +156,14 @@ python run_local.py</pre>
         </div>
         <div class="card">
           <h3>Search</h3>
-          <p>Supports exact, partial, case-insensitive, and RapidFuzz fuzzy search.</p>
+          <p>Supports exact, partial, case-insensitive, and standard-library fuzzy search.</p>
         </div>
       </div>
 
       <h2>Local-Only Note</h2>
       <p>
-        This project page can be hosted as static documentation, but the ARE application is
-        designed for local execution. Cloud-hosted Streamlit apps cannot scan local paths such
-        as C:\Users\... or /Users/... on your laptop.
+        ARE is designed for local execution. It scans only paths available to the same Python
+        process that started the local UI.
       </p>
     </main>
   </body>

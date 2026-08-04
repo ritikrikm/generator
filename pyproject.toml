@@ -10,8 +10,6 @@ readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Automation Repository Explorer" }]
 dependencies = [
-  "rapidfuzz>=3.9.0",
-  "streamlit>=1.36.0",
 ]
 
 [project.optional-dependencies]

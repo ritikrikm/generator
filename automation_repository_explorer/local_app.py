@@ -23,7 +23,27 @@ except ImportError as exc:  # pragma: no cover - depends on local Python install
 from automation_repository_explorer.analyzers.health_analyzer import HealthSeverity
 from automation_repository_explorer.local_graph import build_local_graph_html
 from automation_repository_explorer.local_project_flow import build_local_project_flow_html
-from automation_repository_explorer.models.graph import GraphEdge, GraphNode, NodeType
+from automation_repository_explorer.local_ui.cards import (
+    CardSpec,
+    ScrollableCardList,
+    configure_local_styles,
+)
+from automation_repository_explorer.local_ui.health_presenter import (
+    DEFAULT_HEALTH_PAGE_SIZE,
+    HealthIssueGroup,
+    group_health_findings,
+    page_health_group,
+    severity_counts,
+)
+from automation_repository_explorer.local_ui.navigation import (
+    NodeNavigationEntry,
+    NodeNavigationHistory,
+)
+from automation_repository_explorer.local_ui.relationship_presenter import (
+    RelationshipCard,
+    build_relationship_view,
+)
+from automation_repository_explorer.models.graph import GraphNode, NodeType
 from automation_repository_explorer.project_flow import (
     ProjectFlowModel,
     build_project_flow_model,
@@ -35,7 +55,7 @@ from automation_repository_explorer.ui.flow_graph import forward_relationship_ne
 
 
 class ARELocalApp:
-    """Tkinter desktop UI backed by the existing ARE analysis services."""
+    """Tkinter desktop UI backed by ARE analysis and reusable local UI presenters."""
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -45,14 +65,14 @@ class ARELocalApp:
         self.search_results: tuple[SearchResult, ...] = tuple()
         self.scan_thread: threading.Thread | None = None
 
-        self.current_node_id: str | None = None
-        self.back_history: list[str] = []
-        self.forward_history: list[str] = []
-        self.incoming_targets: dict[str, str] = {}
-        self.outgoing_targets: dict[str, str] = {}
-        self.health_targets: dict[str, str] = {}
-        self.current_score: float | None = None
-        self.current_matched_text: str | None = None
+        self.navigation = NodeNavigationHistory()
+        self.health_filter: HealthSeverity | None = None
+        self.health_groups: tuple[HealthIssueGroup, ...] = tuple()
+        self.health_groups_by_id: dict[str, HealthIssueGroup] = {}
+        self.health_selected_group_id: str | None = None
+        self.health_finding_targets: dict[str, str] = {}
+        self.health_page_index = 0
+        self.health_filter_buttons: dict[HealthSeverity | None, ttk.Button] = {}
 
         self.repository_var = tk.StringVar()
         self.progress_var = tk.IntVar(value=0)
@@ -60,19 +80,26 @@ class ARELocalApp:
         self.search_var = tk.StringVar()
         self.search_mode_var = tk.StringVar(value=SearchMode.CASE_INSENSITIVE.value)
         self.node_type_var = tk.StringVar(value="All")
+
         self.current_name_var = tk.StringVar(value="No node selected")
         self.current_type_var = tk.StringVar(value="")
         self.current_file_var = tk.StringVar(value="")
         self.current_line_var = tk.StringVar(value="")
         self.current_counts_var = tk.StringVar(value="Incoming: 0   Outgoing: 0")
+        self.navigation_status_var = tk.StringVar(value="No relationship navigation yet.")
+
         self.health_total_var = tk.StringVar(value="Health findings: 0")
+        self.health_group_title_var = tk.StringVar(value="Select a severity to review findings.")
+        self.health_group_description_var = tk.StringVar(value="")
+        self.health_page_var = tk.StringVar(value="")
         self.project_flow_status_var = tk.StringVar(
             value="Scan a repository to build complete project flow."
         )
 
         self.root.title("Automation Repository Explorer")
-        self.root.geometry("1480x940")
-        self.root.minsize(1100, 720)
+        self.root.geometry("1540x960")
+        self.root.minsize(1180, 760)
+        configure_local_styles(ttk.Style(self.root))
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -94,10 +121,13 @@ class ARELocalApp:
         repository_frame = ttk.LabelFrame(root_frame, text="Repository", padding=10)
         repository_frame.pack(fill=tk.X)
         ttk.Entry(repository_frame, textvariable=self.repository_var).pack(
-            side=tk.LEFT, fill=tk.X, expand=True
+            side=tk.LEFT,
+            fill=tk.X,
+            expand=True,
         )
         ttk.Button(repository_frame, text="Browse", command=self._browse_repository).pack(
-            side=tk.LEFT, padx=(8, 0)
+            side=tk.LEFT,
+            padx=(8, 0),
         )
         self.scan_button = ttk.Button(
             repository_frame,
@@ -163,7 +193,6 @@ class ARELocalApp:
             ),
             wraplength=1200,
         ).pack(anchor=tk.W, pady=(0, 8))
-
         ttk.Label(
             self.project_flow_tab,
             textvariable=self.project_flow_status_var,
@@ -255,14 +284,14 @@ class ARELocalApp:
         content_pane.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
         result_frame = ttk.LabelFrame(content_pane, text="Search Results", padding=6)
-        content_pane.add(result_frame, minsize=170, stretch="always")
+        content_pane.add(result_frame, minsize=155, stretch="always")
         columns = ("Score", "Type", "Name", "File", "Line")
         self.search_tree = ttk.Treeview(
             result_frame,
             columns=columns,
             show="headings",
             selectmode="browse",
-            height=8,
+            height=7,
         )
         for name in columns:
             self.search_tree.heading(name, text=name)
@@ -284,9 +313,10 @@ class ARELocalApp:
         explorer_frame = ttk.LabelFrame(
             content_pane,
             text="Interactive Relationship Explorer",
-            padding=6,
+            padding=8,
         )
-        content_pane.add(explorer_frame, minsize=360, stretch="always")
+        content_pane.add(explorer_frame, minsize=430, stretch="always")
+
         action_frame = ttk.Frame(explorer_frame)
         action_frame.pack(fill=tk.X, pady=(0, 6))
         self.back_button = ttk.Button(
@@ -310,8 +340,17 @@ class ARELocalApp:
         ).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Label(
             action_frame,
-            text="Click an Incoming or Outgoing row to continue from that node.",
-        ).pack(side=tk.LEFT, padx=(12, 0))
+            textvariable=self.navigation_status_var,
+        ).pack(side=tk.LEFT, padx=(14, 0))
+
+        ttk.Label(
+            explorer_frame,
+            text=(
+                "Read the explorer left → center → right. Incoming cards point into the current node; "
+                "Outgoing cards are relationships leaving it. Click any card to make that node current."
+            ),
+            wraplength=1300,
+        ).pack(anchor=tk.W, fill=tk.X, pady=(0, 8))
 
         relationship_pane = tk.PanedWindow(
             explorer_frame,
@@ -321,82 +360,72 @@ class ARELocalApp:
             borderwidth=0,
         )
         relationship_pane.pack(fill=tk.BOTH, expand=True)
-        relationship_left = ttk.Frame(relationship_pane)
-        relationship_pane.add(relationship_left, minsize=650, stretch="always")
 
-        self.relationship_notebook = ttk.Notebook(relationship_left)
-        self.relationship_notebook.pack(fill=tk.BOTH, expand=True)
-        incoming_tab = ttk.Frame(self.relationship_notebook, padding=6)
-        outgoing_tab = ttk.Frame(self.relationship_notebook, padding=6)
-        self.relationship_notebook.add(incoming_tab, text="Incoming Relationships (0)")
-        self.relationship_notebook.add(outgoing_tab, text="Outgoing Relationships (0)")
-        self.incoming_tree = self._build_relationship_tree(incoming_tab)
-        self.outgoing_tree = self._build_relationship_tree(outgoing_tab)
-        self.incoming_tree.bind(
-            "<<TreeviewSelect>>",
-            lambda _event: self._follow_relationship(self.incoming_tree, incoming=True),
+        incoming_frame = ttk.LabelFrame(
+            relationship_pane,
+            text="← Incoming",
+            padding=8,
         )
-        self.outgoing_tree.bind(
-            "<<TreeviewSelect>>",
-            lambda _event: self._follow_relationship(self.outgoing_tree, incoming=False),
-        )
-
-        details_frame = ttk.LabelFrame(
+        current_frame = ttk.LabelFrame(
             relationship_pane,
             text="Current Node",
             padding=12,
         )
-        relationship_pane.add(details_frame, minsize=320, stretch="never")
-        self._build_current_node_panel(details_frame)
-
-    def _build_relationship_tree(self, parent: ttk.Frame) -> ttk.Treeview:
-        columns = ("Relation", "Type", "Node", "File", "Line", "Evidence")
-        tree = ttk.Treeview(
-            parent,
-            columns=columns,
-            show="headings",
-            selectmode="browse",
-            height=12,
+        outgoing_frame = ttk.LabelFrame(
+            relationship_pane,
+            text="Outgoing →",
+            padding=8,
         )
-        for name in columns:
-            tree.heading(name, text=name)
-        tree.column("Relation", width=190, anchor=tk.W)
-        tree.column("Type", width=150, anchor=tk.W)
-        tree.column("Node", width=330, anchor=tk.W)
-        tree.column("File", width=370, anchor=tk.W)
-        tree.column("Line", width=65, anchor=tk.E)
-        tree.column("Evidence", width=260, anchor=tk.W)
-        y_scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
-        x_scrollbar = ttk.Scrollbar(parent, orient=tk.HORIZONTAL, command=tree.xview)
-        tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
-        tree.grid(row=0, column=0, sticky="nsew")
-        y_scrollbar.grid(row=0, column=1, sticky="ns")
-        x_scrollbar.grid(row=1, column=0, sticky="ew")
-        parent.rowconfigure(0, weight=1)
-        parent.columnconfigure(0, weight=1)
-        return tree
+        relationship_pane.add(incoming_frame, minsize=320, stretch="always")
+        relationship_pane.add(current_frame, minsize=360, stretch="always")
+        relationship_pane.add(outgoing_frame, minsize=320, stretch="always")
+
+        ttk.Label(
+            incoming_frame,
+            text="Nodes whose relationships point to the current node.",
+            wraplength=380,
+        ).pack(anchor=tk.W, fill=tk.X, pady=(0, 6))
+        self.incoming_cards = ScrollableCardList(incoming_frame)
+        self.incoming_cards.pack(fill=tk.BOTH, expand=True)
+
+        self._build_current_node_panel(current_frame)
+
+        ttk.Label(
+            outgoing_frame,
+            text="Nodes reached directly from the current node.",
+            wraplength=380,
+        ).pack(anchor=tk.W, fill=tk.X, pady=(0, 6))
+        self.outgoing_cards = ScrollableCardList(outgoing_frame)
+        self.outgoing_cards.pack(fill=tk.BOTH, expand=True)
 
     def _build_current_node_panel(self, parent: ttk.Frame) -> None:
         ttk.Label(
             parent,
             textvariable=self.current_name_var,
-            font=("Segoe UI", 13, "bold"),
-            wraplength=340,
+            font=("Segoe UI", 14, "bold"),
+            wraplength=410,
         ).pack(anchor=tk.W, fill=tk.X)
         ttk.Label(
             parent,
             textvariable=self.current_type_var,
             font=("Segoe UI", 10, "bold"),
         ).pack(anchor=tk.W, pady=(4, 12))
+
+        ttk.Separator(parent, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=(0, 10))
         ttk.Label(parent, text="File", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W)
         ttk.Label(
             parent,
             textvariable=self.current_file_var,
-            wraplength=340,
+            wraplength=410,
         ).pack(anchor=tk.W, fill=tk.X, pady=(1, 8))
         ttk.Label(parent, text="Line", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W)
         ttk.Label(parent, textvariable=self.current_line_var).pack(anchor=tk.W, pady=(1, 8))
-        ttk.Label(parent, textvariable=self.current_counts_var).pack(anchor=tk.W, pady=(0, 10))
+        ttk.Label(
+            parent,
+            textvariable=self.current_counts_var,
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor=tk.W, pady=(0, 10))
+
         ttk.Label(
             parent,
             text="Details / Metadata",
@@ -407,7 +436,7 @@ class ARELocalApp:
         metadata_scrollbar = ttk.Scrollbar(metadata_frame, orient=tk.VERTICAL)
         self.current_metadata_text = tk.Text(
             metadata_frame,
-            height=14,
+            height=12,
             width=42,
             wrap=tk.WORD,
             yscrollcommand=metadata_scrollbar.set,
@@ -422,104 +451,101 @@ class ARELocalApp:
         ttk.Label(
             self.health_tab,
             text=(
-                "Evidence-based static checks. High-confidence findings indicate broken or ambiguous "
-                "mappings; Review findings are investigation candidates, not deletion recommendations."
+                "Health findings are grouped by severity and check type. Click a severity, then an issue "
+                "group, then any finding card to inspect the exact node and evidence. Review findings are "
+                "investigation candidates, not deletion recommendations."
             ),
-            wraplength=1200,
+            wraplength=1300,
         ).pack(anchor=tk.W, pady=(0, 8))
+
+        self.health_filter_frame = ttk.Frame(self.health_tab)
+        self.health_filter_frame.pack(fill=tk.X, pady=(0, 8))
+        self._build_health_filter_buttons()
+
         ttk.Label(
             self.health_tab,
             textvariable=self.health_total_var,
             font=("Segoe UI", 11, "bold"),
         ).pack(anchor=tk.W, pady=(0, 8))
 
-        pane = tk.PanedWindow(
+        health_pane = tk.PanedWindow(
             self.health_tab,
-            orient=tk.VERTICAL,
+            orient=tk.HORIZONTAL,
             sashwidth=6,
             sashrelief=tk.RAISED,
             borderwidth=0,
         )
-        pane.pack(fill=tk.BOTH, expand=True)
-        summary_frame = ttk.LabelFrame(pane, text="Health Summary", padding=6)
-        pane.add(summary_frame, minsize=125, stretch="never")
-        self.health_summary_tree = ttk.Treeview(
-            summary_frame,
-            columns=("Category", "Count"),
-            show="headings",
-            height=6,
-        )
-        self.health_summary_tree.heading("Category", text="Category")
-        self.health_summary_tree.heading("Count", text="Count")
-        self.health_summary_tree.column("Category", width=500, anchor=tk.W)
-        self.health_summary_tree.column("Count", width=100, anchor=tk.E)
-        self.health_summary_tree.pack(fill=tk.BOTH, expand=True)
+        health_pane.pack(fill=tk.BOTH, expand=True)
 
-        findings_frame = ttk.LabelFrame(pane, text="Findings", padding=6)
-        pane.add(findings_frame, minsize=300, stretch="always")
-        action_frame = ttk.Frame(findings_frame)
-        action_frame.pack(fill=tk.X, pady=(0, 6))
-        ttk.Button(
-            action_frame,
-            text="Explore selected finding",
-            command=self._explore_selected_health_finding,
-        ).pack(side=tk.LEFT)
+        groups_frame = ttk.LabelFrame(health_pane, text="Grouped Issues", padding=8)
+        findings_frame = ttk.LabelFrame(health_pane, text="Finding Details", padding=8)
+        health_pane.add(groups_frame, minsize=360, stretch="always")
+        health_pane.add(findings_frame, minsize=560, stretch="always")
+
         ttk.Label(
-            action_frame,
-            text="Double-click a finding to open its node in Search & Relationships.",
-        ).pack(side=tk.LEFT, padx=(10, 0))
+            groups_frame,
+            text="Same health checks are grouped together so large counts stay understandable.",
+            wraplength=440,
+        ).pack(anchor=tk.W, fill=tk.X, pady=(0, 6))
+        self.health_group_cards = ScrollableCardList(groups_frame)
+        self.health_group_cards.pack(fill=tk.BOTH, expand=True)
 
-        tree_frame = ttk.Frame(findings_frame)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
-        columns = (
-            "Severity",
-            "Confidence",
-            "Check",
-            "Type",
-            "Name",
-            "File",
-            "Line",
-            "Why",
+        ttk.Label(
+            findings_frame,
+            textvariable=self.health_group_title_var,
+            style="ARE.SectionTitle.TLabel",
+            wraplength=720,
+        ).pack(anchor=tk.W, fill=tk.X)
+        ttk.Label(
+            findings_frame,
+            textvariable=self.health_group_description_var,
+            wraplength=720,
+        ).pack(anchor=tk.W, fill=tk.X, pady=(3, 8))
+
+        page_frame = ttk.Frame(findings_frame)
+        page_frame.pack(fill=tk.X, pady=(0, 6))
+        self.health_previous_button = ttk.Button(
+            page_frame,
+            text="← Previous 100",
+            command=self._previous_health_page,
+            state=tk.DISABLED,
         )
-        self.health_tree = ttk.Treeview(
-            tree_frame,
-            columns=columns,
-            show="headings",
-            selectmode="browse",
+        self.health_previous_button.pack(side=tk.LEFT)
+        self.health_next_button = ttk.Button(
+            page_frame,
+            text="Next 100 →",
+            command=self._next_health_page,
+            state=tk.DISABLED,
         )
-        for name in columns:
-            self.health_tree.heading(name, text=name)
-        self.health_tree.column("Severity", width=85, anchor=tk.W)
-        self.health_tree.column("Confidence", width=95, anchor=tk.W)
-        self.health_tree.column("Check", width=260, anchor=tk.W)
-        self.health_tree.column("Type", width=140, anchor=tk.W)
-        self.health_tree.column("Name", width=300, anchor=tk.W)
-        self.health_tree.column("File", width=330, anchor=tk.W)
-        self.health_tree.column("Line", width=65, anchor=tk.E)
-        self.health_tree.column("Why", width=520, anchor=tk.W)
-        y_scrollbar = ttk.Scrollbar(
-            tree_frame,
-            orient=tk.VERTICAL,
-            command=self.health_tree.yview,
+        self.health_next_button.pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Label(page_frame, textvariable=self.health_page_var).pack(side=tk.LEFT, padx=(12, 0))
+
+        self.health_finding_cards = ScrollableCardList(findings_frame)
+        self.health_finding_cards.pack(fill=tk.BOTH, expand=True)
+
+    def _build_health_filter_buttons(self) -> None:
+        for child in self.health_filter_frame.winfo_children():
+            child.destroy()
+        self.health_filter_buttons.clear()
+
+        all_button = ttk.Button(
+            self.health_filter_frame,
+            text="All 0",
+            style="ARE.SelectedFilter.TButton",
+            command=lambda: self._apply_health_filter(None),
         )
-        x_scrollbar = ttk.Scrollbar(
-            tree_frame,
-            orient=tk.HORIZONTAL,
-            command=self.health_tree.xview,
-        )
-        self.health_tree.configure(
-            yscrollcommand=y_scrollbar.set,
-            xscrollcommand=x_scrollbar.set,
-        )
-        self.health_tree.grid(row=0, column=0, sticky="nsew")
-        y_scrollbar.grid(row=0, column=1, sticky="ns")
-        x_scrollbar.grid(row=1, column=0, sticky="ew")
-        tree_frame.rowconfigure(0, weight=1)
-        tree_frame.columnconfigure(0, weight=1)
-        self.health_tree.bind(
-            "<Double-1>",
-            lambda _event: self._explore_selected_health_finding(),
-        )
+        all_button.pack(side=tk.LEFT)
+        self.health_filter_buttons[None] = all_button
+
+        for severity in HealthSeverity:
+            button = ttk.Button(
+                self.health_filter_frame,
+                text=f"{severity.value} 0",
+                style="ARE.Filter.TButton",
+                command=lambda selected=severity: self._apply_health_filter(selected),
+            )
+            button.pack(side=tk.LEFT, padx=(6, 0))
+            self.health_filter_buttons[severity] = button
 
     def _build_issues_tab(self) -> None:
         ttk.Label(
@@ -621,9 +647,7 @@ class ARELocalApp:
                 f"{issue_count} parse issue(s)."
             )
         else:
-            self.status_var.set(
-                f"100% — Scan complete: {health_count} health finding(s)."
-            )
+            self.status_var.set(f"100% — Scan complete: {health_count} health finding(s).")
 
         self._populate_summary()
         self._populate_project_flow_summary()
@@ -635,23 +659,32 @@ class ARELocalApp:
         self.context = None
         self.project_flow_model = None
         self.search_results = tuple()
-        self.health_targets.clear()
         self.project_flow_button.configure(state=tk.DISABLED)
-        self.project_flow_status_var.set(
-            "Scan a repository to build complete project flow."
-        )
+        self.project_flow_status_var.set("Scan a repository to build complete project flow.")
+
         for tree in (
             self.summary_tree,
             self.project_flow_tree,
             self.files_tree,
             self.search_tree,
-            self.health_summary_tree,
-            self.health_tree,
             self.issues_tree,
         ):
             for item in tree.get_children():
                 tree.delete(item)
+
+        self.health_groups = tuple()
+        self.health_groups_by_id.clear()
+        self.health_selected_group_id = None
+        self.health_finding_targets.clear()
+        self.health_page_index = 0
         self.health_total_var.set("Health findings: 0")
+        self.health_group_title_var.set("Select a severity to review findings.")
+        self.health_group_description_var.set("")
+        self.health_page_var.set("")
+        self.health_group_cards.clear()
+        self.health_finding_cards.clear()
+        self._update_health_filter_button_labels()
+        self._update_health_page_buttons(False, False)
         self._clear_current_node()
 
     def _populate_summary(self) -> None:
@@ -678,8 +711,7 @@ class ARELocalApp:
         counts = project_flow_category_counts(self.project_flow_model)
         total = sum(count for _label, count in counts)
         self.project_flow_status_var.set(
-            f"Complete project flow ready: {total} indexed file(s) "
-            f"across {len(counts)} section(s)."
+            f"Complete project flow ready: {total} indexed file(s) across {len(counts)} section(s)."
         )
         for label, count in counts:
             self.project_flow_tree.insert("", tk.END, values=(label, count))
@@ -699,40 +731,162 @@ class ARELocalApp:
 
     def _populate_health(self) -> None:
         assert self.context is not None
-        report = self.context.health
-        self.health_targets.clear()
-        self.health_total_var.set(f"Health findings: {report.total}")
-        severity_counts = report.count_by_severity()
-        summary_rows = [
-            ("High severity", severity_counts.get(HealthSeverity.HIGH, 0)),
-            ("Medium severity", severity_counts.get(HealthSeverity.MEDIUM, 0)),
-            ("Review candidates", severity_counts.get(HealthSeverity.REVIEW, 0)),
-        ]
-        summary_rows.extend(sorted(report.count_by_check().items()))
-        for category, count in summary_rows:
-            self.health_summary_tree.insert("", tk.END, values=(category, count))
+        self.health_filter = None
+        self._update_health_filter_button_labels()
+        self._apply_health_filter(None)
 
-        for index, finding in enumerate(report.findings):
-            node = self.context.graph.get_node(finding.node_id)
-            if node is None:
+    def _update_health_filter_button_labels(self) -> None:
+        if self.context is None:
+            total = 0
+            counts = {severity: 0 for severity in HealthSeverity}
+        else:
+            total = self.context.health.total
+            counts = severity_counts(self.context.health)
+
+        self.health_filter_buttons[None].configure(text=f"All {total}")
+        for severity, button in self.health_filter_buttons.items():
+            if severity is None:
                 continue
-            iid = f"health-{index}"
-            self.health_targets[iid] = node.id
-            self.health_tree.insert(
-                "",
-                tk.END,
-                iid=iid,
-                values=(
-                    finding.severity.value,
-                    finding.confidence.value,
-                    finding.check_name,
-                    node.type.value,
-                    node.name,
-                    self._relative_path(node.file_path) if node.file_path else "",
-                    node.line or "",
-                    finding.message,
-                ),
+            button.configure(text=f"{severity.value} {counts.get(severity, 0)}")
+
+    def _apply_health_filter(self, severity: HealthSeverity | None) -> None:
+        if self.context is None:
+            return
+
+        self.health_filter = severity
+        self.health_groups = group_health_findings(self.context.health, severity=severity)
+        self.health_groups_by_id = {group.id: group for group in self.health_groups}
+        self.health_selected_group_id = self.health_groups[0].id if self.health_groups else None
+        self.health_page_index = 0
+
+        for filter_value, button in self.health_filter_buttons.items():
+            button.configure(
+                style=(
+                    "ARE.SelectedFilter.TButton"
+                    if filter_value == severity
+                    else "ARE.Filter.TButton"
+                )
             )
+
+        selected_count = sum(group.count for group in self.health_groups)
+        filter_name = severity.value if severity is not None else "All severities"
+        self.health_total_var.set(
+            f"{filter_name}: {selected_count} finding(s) grouped into {len(self.health_groups)} issue type(s)."
+        )
+        self._render_health_groups()
+        self._render_health_findings()
+
+    def _render_health_groups(self) -> None:
+        cards = tuple(
+            CardSpec(
+                id=group.id,
+                eyebrow=f"{group.severity.value} • {group.count} finding(s)",
+                title=group.check_name,
+                detail=group.description,
+                action_label="Show findings",
+            )
+            for group in self.health_groups
+        )
+        self.health_group_cards.set_cards(
+            cards,
+            on_open=self._select_health_group,
+            selected_id=self.health_selected_group_id,
+            empty_text="No health findings in this severity.",
+        )
+
+    def _select_health_group(self, group_id: str) -> None:
+        if group_id not in self.health_groups_by_id:
+            return
+        self.health_selected_group_id = group_id
+        self.health_page_index = 0
+        self._render_health_groups()
+        self._render_health_findings()
+
+    def _render_health_findings(self) -> None:
+        if self.context is None or self.health_selected_group_id is None:
+            self.health_group_title_var.set("No issue group selected.")
+            self.health_group_description_var.set("")
+            self.health_page_var.set("")
+            self.health_finding_targets.clear()
+            self.health_finding_cards.set_cards(
+                tuple(),
+                on_open=lambda _card_id: None,
+                empty_text="No findings to display.",
+            )
+            self._update_health_page_buttons(False, False)
+            return
+
+        group = self.health_groups_by_id[self.health_selected_group_id]
+        page = page_health_group(
+            group,
+            self.context.graph,
+            page_index=self.health_page_index,
+            page_size=DEFAULT_HEALTH_PAGE_SIZE,
+            path_formatter=self._relative_path,
+        )
+        self.health_page_index = page.page_index
+        self.health_group_title_var.set(f"{group.check_name} — {group.count} finding(s)")
+        self.health_group_description_var.set(f"What ARE detected: {group.description}")
+
+        start = page.page_index * DEFAULT_HEALTH_PAGE_SIZE + 1 if page.total else 0
+        end = start + len(page.cards) - 1 if page.cards else 0
+        self.health_page_var.set(
+            f"Showing {start}-{end} of {page.total} • Page {page.page_index + 1}/{page.page_count}"
+        )
+        self._update_health_page_buttons(page.can_previous, page.can_next)
+
+        self.health_finding_targets = {card.id: card.node_id for card in page.cards}
+        cards = tuple(
+            CardSpec(
+                id=card.id,
+                eyebrow=f"{card.confidence} confidence • {card.node_type}",
+                title=card.name,
+                subtitle=card.location,
+                detail=card.message,
+                action_label="Explore node",
+            )
+            for card in page.cards
+        )
+        self.health_finding_cards.set_cards(
+            cards,
+            on_open=self._open_health_finding_card,
+            empty_text="No resolvable nodes were available for this finding page.",
+        )
+
+    def _previous_health_page(self) -> None:
+        if self.health_page_index <= 0:
+            return
+        self.health_page_index -= 1
+        self._render_health_findings()
+
+    def _next_health_page(self) -> None:
+        if self.context is None or self.health_selected_group_id is None:
+            return
+        group = self.health_groups_by_id[self.health_selected_group_id]
+        page = page_health_group(
+            group,
+            self.context.graph,
+            page_index=self.health_page_index,
+            page_size=DEFAULT_HEALTH_PAGE_SIZE,
+            path_formatter=self._relative_path,
+        )
+        if not page.can_next:
+            return
+        self.health_page_index += 1
+        self._render_health_findings()
+
+    def _update_health_page_buttons(self, can_previous: bool, can_next: bool) -> None:
+        self.health_previous_button.configure(state=tk.NORMAL if can_previous else tk.DISABLED)
+        self.health_next_button.configure(state=tk.NORMAL if can_next else tk.DISABLED)
+
+    def _open_health_finding_card(self, card_id: str) -> None:
+        node_id = self.health_finding_targets.get(card_id)
+        if not node_id:
+            return
+        group = self.health_groups_by_id.get(self.health_selected_group_id or "")
+        source = f"Health: {group.check_name}" if group is not None else "Health"
+        self.notebook.select(self.search_tab)
+        self._visit_node(node_id, source=source)
 
     def _populate_issues(self) -> None:
         assert self.context is not None
@@ -751,7 +905,6 @@ class ARELocalApp:
         if self.context is None or self.project_flow_model is None:
             messagebox.showinfo("ARE", "Scan a repository first.")
             return
-
         graph_html = build_local_project_flow_html(
             self.project_flow_model,
             title=f"ARE Project Flow — {self.context.index.root.name}",
@@ -776,11 +929,7 @@ class ARELocalApp:
         node_types: set[NodeType] | None = None
         selected_type = self.node_type_var.get()
         if selected_type != "All":
-            node_types = {
-                node_type
-                for node_type in NodeType
-                if node_type.value == selected_type
-            }
+            node_types = {node_type for node_type in NodeType if node_type.value == selected_type}
 
         self.search_results = self.service.search(
             self.context.graph,
@@ -812,229 +961,169 @@ class ARELocalApp:
         result = self._selected_search_result()
         if result is None or self.context is None:
             return
-        self._navigate_to_node(
+        self._visit_node(
             result.node.id,
-            add_history=self.current_node_id is not None,
             score=result.score,
             matched_text=result.matched_text,
+            source="Search",
         )
 
-    def _navigate_to_node(
+    def _visit_node(
         self,
         node_id: str,
         *,
-        add_history: bool = True,
         score: float | None = None,
         matched_text: str | None = None,
+        source: str | None = None,
     ) -> None:
+        if self.context is None or self.context.graph.get_node(node_id) is None:
+            return
+        entry = self.navigation.visit(
+            NodeNavigationEntry(
+                node_id=node_id,
+                score=score,
+                matched_text=matched_text,
+                source=source,
+            )
+        )
+        self._render_navigation_entry(entry)
+
+    def _render_navigation_entry(self, entry: NodeNavigationEntry) -> None:
         if self.context is None:
             return
-        node = self.context.graph.get_node(node_id)
+        node = self.context.graph.get_node(entry.node_id)
         if node is None:
             return
-        if add_history and self.current_node_id and self.current_node_id != node_id:
-            self.back_history.append(self.current_node_id)
-            self.forward_history.clear()
-        self.current_node_id = node_id
-        self.current_score = score
-        self.current_matched_text = matched_text
-        self._render_current_node(node)
+        self._render_current_node(node, entry)
         self._update_history_buttons()
 
-    def _render_current_node(self, node: GraphNode) -> None:
+    def _render_current_node(self, node: GraphNode, entry: NodeNavigationEntry) -> None:
         if self.context is None:
             return
-        details = self.service.node_details(self.context.graph, node.id)
-        parent_edges = tuple(details.get("parent_edges", ()))
-        child_edges = tuple(details.get("child_edges", ()))
+        relationship_view = build_relationship_view(
+            self.context.graph,
+            node.id,
+            path_formatter=self._relative_path,
+        )
+        if relationship_view is None:
+            return
+
         self.current_name_var.set(node.name)
         self.current_type_var.set(node.type.value)
-        self.current_file_var.set(
-            self._relative_path(node.file_path) if node.file_path else ""
-        )
+        self.current_file_var.set(self._relative_path(node.file_path) if node.file_path else "")
         self.current_line_var.set(str(node.line or ""))
         self.current_counts_var.set(
-            f"Incoming: {len(parent_edges)}   Outgoing: {len(child_edges)}"
+            f"Incoming: {len(relationship_view.incoming)}   •   Outgoing: {len(relationship_view.outgoing)}"
         )
 
         info_lines: list[str] = []
-        if self.current_score is not None:
-            info_lines.append(f"Search score: {self.current_score:.1f}")
-        if self.current_matched_text:
-            info_lines.append(f"Matched text: {self.current_matched_text}")
+        if entry.source:
+            info_lines.append(f"Opened from: {entry.source}")
+        if entry.score is not None:
+            info_lines.append(f"Search score: {entry.score:.1f}")
+        if entry.matched_text:
+            info_lines.append(f"Matched text: {entry.matched_text}")
         if node.metadata:
             if info_lines:
                 info_lines.append("")
-            info_lines.extend(
-                f"{key}: {value}"
-                for key, value in node.metadata.items()
-            )
+            info_lines.extend(f"{key}: {value}" for key, value in node.metadata.items())
         self._set_current_metadata(
             "\n".join(info_lines) if info_lines else "No additional metadata."
         )
 
-        self._populate_relationship_tree(
-            self.incoming_tree,
-            parent_edges,
-            incoming=True,
+        self.incoming_cards.set_cards(
+            tuple(self._relationship_card_spec(card) for card in relationship_view.incoming),
+            on_open=lambda card_id: self._visit_node(card_id, source="Incoming relationship"),
+            empty_text="No incoming relationships. Nothing in the analyzed graph points to this node.",
         )
-        self._populate_relationship_tree(
-            self.outgoing_tree,
-            child_edges,
-            incoming=False,
+        self.outgoing_cards.set_cards(
+            tuple(self._relationship_card_spec(card) for card in relationship_view.outgoing),
+            on_open=lambda card_id: self._visit_node(card_id, source="Outgoing relationship"),
+            empty_text="No outgoing relationships. This is currently an end node in the analyzed graph.",
         )
-        self._update_relationship_tab_titles(
-            len(parent_edges),
-            len(child_edges),
-        )
+
         self.status_var.set(
             f"Current node: {node.type.value} — {node.name} | "
-            f"{len(parent_edges)} incoming / {len(child_edges)} outgoing"
+            f"{len(relationship_view.incoming)} incoming / {len(relationship_view.outgoing)} outgoing"
         )
 
-    def _populate_relationship_tree(
-        self,
-        tree: ttk.Treeview,
-        edges: tuple[GraphEdge, ...],
-        *,
-        incoming: bool,
-    ) -> None:
-        if self.context is None:
-            return
-        for item in tree.get_children():
-            tree.delete(item)
-        target_map = self.incoming_targets if incoming else self.outgoing_targets
-        target_map.clear()
-        for index, edge in enumerate(edges):
-            connected_node_id = edge.source_id if incoming else edge.target_id
-            connected_node = self.context.graph.get_node(connected_node_id)
-            if connected_node is None:
-                continue
-            iid = f"{'in' if incoming else 'out'}-{index}"
-            target_map[iid] = connected_node.id
-            tree.insert(
-                "",
-                tk.END,
-                iid=iid,
-                values=(
-                    edge.relation.value,
-                    connected_node.type.value,
-                    connected_node.name,
-                    self._relative_path(connected_node.file_path)
-                    if connected_node.file_path
-                    else "",
-                    connected_node.line or "",
-                    self._edge_evidence(edge),
-                ),
-            )
-
-    def _follow_relationship(self, tree: ttk.Treeview, *, incoming: bool) -> None:
-        selected = tree.selection()
-        if not selected:
-            return
-        target_map = self.incoming_targets if incoming else self.outgoing_targets
-        node_id = target_map.get(selected[0])
-        if node_id:
-            self._navigate_to_node(node_id, add_history=True)
-
-    def _explore_selected_health_finding(self) -> None:
-        if self.context is None:
-            return
-        selected = self.health_tree.selection()
-        if not selected:
-            messagebox.showinfo("ARE", "Select a repository health finding first.")
-            return
-        node_id = self.health_targets.get(selected[0])
-        if not node_id:
-            return
-        self.notebook.select(self.search_tab)
-        self._navigate_to_node(
-            node_id,
-            add_history=self.current_node_id is not None,
+    @staticmethod
+    def _relationship_card_spec(card: RelationshipCard) -> CardSpec:
+        relation_label = card.relation.replace("_", " ").title()
+        return CardSpec(
+            id=card.node_id,
+            eyebrow=f"{relation_label} • {card.node_type}",
+            title=card.name,
+            subtitle=card.location,
+            detail=card.evidence,
+            action_label="Make current",
         )
 
     def _go_back(self) -> None:
-        if not self.back_history or self.current_node_id is None:
-            return
-        target = self.back_history.pop()
-        self.forward_history.append(self.current_node_id)
-        self._navigate_to_node(target, add_history=False)
+        entry = self.navigation.back()
+        if entry is not None:
+            self._render_navigation_entry(entry)
+        else:
+            self._update_history_buttons()
 
     def _go_forward(self) -> None:
-        if not self.forward_history or self.current_node_id is None:
-            return
-        target = self.forward_history.pop()
-        self.back_history.append(self.current_node_id)
-        self._navigate_to_node(target, add_history=False)
+        entry = self.navigation.forward()
+        if entry is not None:
+            self._render_navigation_entry(entry)
+        else:
+            self._update_history_buttons()
 
     def _update_history_buttons(self) -> None:
         self.back_button.configure(
-            state=tk.NORMAL if self.back_history else tk.DISABLED
+            state=tk.NORMAL if self.navigation.can_back else tk.DISABLED,
         )
         self.forward_button.configure(
-            state=tk.NORMAL if self.forward_history else tk.DISABLED
+            state=tk.NORMAL if self.navigation.can_forward else tk.DISABLED,
         )
-
-    def _update_relationship_tab_titles(
-        self,
-        incoming_count: int,
-        outgoing_count: int,
-    ) -> None:
-        self.relationship_notebook.tab(
-            0,
-            text=f"Incoming Relationships ({incoming_count})",
-        )
-        self.relationship_notebook.tab(
-            1,
-            text=f"Outgoing Relationships ({outgoing_count})",
+        if self.navigation.current is None:
+            self.navigation_status_var.set("No relationship navigation yet.")
+            return
+        source = self.navigation.current.source or "Relationship Explorer"
+        self.navigation_status_var.set(
+            f"{source} • Back {self.navigation.back_count} • Forward {self.navigation.forward_count}"
         )
 
     def _clear_current_node(self) -> None:
-        self.current_node_id = None
-        self.current_score = None
-        self.current_matched_text = None
-        self.back_history.clear()
-        self.forward_history.clear()
-        self.incoming_targets.clear()
-        self.outgoing_targets.clear()
-        for tree in (self.incoming_tree, self.outgoing_tree):
-            for item in tree.get_children():
-                tree.delete(item)
+        self.navigation.reset()
+        self.incoming_cards.clear()
+        self.outgoing_cards.clear()
         self.current_name_var.set("No node selected")
         self.current_type_var.set("")
         self.current_file_var.set("")
         self.current_line_var.set("")
         self.current_counts_var.set("Incoming: 0   Outgoing: 0")
         self._set_current_metadata("")
-        self._update_relationship_tab_titles(0, 0)
         self._update_history_buttons()
 
     def _open_current_graph(self) -> None:
         if self.context is None:
             messagebox.showinfo("ARE", "Scan a repository first.")
             return
-        if self.current_node_id is None:
+        current = self.navigation.current
+        if current is None:
             messagebox.showinfo(
                 "ARE",
                 "Select a search result, health finding, or relationship first.",
             )
             return
-        focus_node = self.context.graph.get_node(self.current_node_id)
+        focus_node = self.context.graph.get_node(current.node_id)
         if focus_node is None:
             return
 
         nodes, edges = forward_relationship_neighborhood(
             self.context,
-            self.current_node_id,
+            current.node_id,
             max_depth=14,
             include_examples=False,
             max_nodes=1500,
         )
         if not nodes:
-            messagebox.showinfo(
-                "ARE",
-                "No relationship graph is available for this node.",
-            )
+            messagebox.showinfo("ARE", "No relationship graph is available for this node.")
             return
         ordered_nodes = (
             focus_node,
@@ -1076,15 +1165,6 @@ class ARELocalApp:
         if value:
             self.current_metadata_text.insert("1.0", value)
         self.current_metadata_text.configure(state=tk.DISABLED)
-
-    @staticmethod
-    def _edge_evidence(edge: GraphEdge) -> str:
-        if not edge.metadata:
-            return ""
-        return "; ".join(
-            f"{key}={value}"
-            for key, value in edge.metadata.items()
-        )
 
 
 def main() -> None:

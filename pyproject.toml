@@ -9,12 +9,12 @@ description = "Static analysis explorer for Java Selenium Cucumber automation re
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "Automation Repository Explorer" }]
-dependencies = [
-  "rapidfuzz>=3.9.0",
-  "streamlit>=1.36.0",
-]
+dependencies = []
 
 [project.optional-dependencies]
+fast-search = [
+  "rapidfuzz>=3.9.0",
+]
 dev = [
   "pytest>=8.2.0",
   "mypy>=1.10.0",

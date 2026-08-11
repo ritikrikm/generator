@@ -95,9 +95,13 @@ class JavaMethod:
     location: SourceLocation
     end_line: int
     body: str
+    # Backwards-compatible simple method names used by existing ARE code/tests.
     calls: tuple[str, ...]
     string_literals: tuple[str, ...]
     step_definition: StepDefinition | None = None
+    # Richer receiver-aware expressions, e.g. ``wf.click`` or ``LoginPage.open``.
+    # New resolvers use this when present; older consumers can keep using ``calls``.
+    call_expressions: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def qualified_name(self) -> str:

@@ -82,13 +82,16 @@ def main() -> None:
 
 
 def _scan_repository(repository_path: Path) -> None:
-    """Scan a repository and store the active exploration context."""
+    """Scan a repository, show real progress, and retain non-fatal parser diagnostics."""
 
     progress_bar = st.progress(1, text="1% — Starting repository scan...")
 
     def update_progress(percent: int, message: str) -> None:
         safe_percent = max(1, min(percent, 100))
-        progress_bar.progress(safe_percent, text=f"{safe_percent}% — {message}")
+        progress_bar.progress(
+            safe_percent,
+            text=f"{safe_percent}% — {message}",
+        )
 
     try:
         context = get_service().explore(
@@ -103,11 +106,33 @@ def _scan_repository(repository_path: Path) -> None:
             "A Streamlit Cloud website cannot read local C:\\ or /Users paths from your browser."
         )
         return
+    except Exception as exc:  # noqa: BLE001 - surface an actionable scan failure in the UI
+        progress_bar.empty()
+        st.error(f"Repository scan failed: {exc}")
+        return
 
     set_repository_path(repository_path)
     set_context(context)
-    progress_bar.progress(100, text="100% — Repository scan complete.")
-    st.success("Repository scanned.")
+
+    if context.index.parse_issues:
+        st.warning(
+            f"Repository scanned with {len(context.index.parse_issues)} file(s) that ARE could not fully parse."
+        )
+        with st.expander("View scan issues"):
+            st.dataframe(
+                [
+                    {
+                        "File": str(issue.file_path),
+                        "Parser": issue.parser_name,
+                        "Reason": issue.message,
+                    }
+                    for issue in context.index.parse_issues
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        st.success("Repository scanned successfully.")
 
 
 if __name__ == "__main__":

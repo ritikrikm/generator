@@ -20,15 +20,18 @@ LOGGER = logging.getLogger(__name__)
 
 
 class FeatureParser(RepositoryParser[FeatureDocument]):
-    """Static parser for Cucumber .feature files."""
+    """Static parser for Cucumber .feature files independent of folder structure."""
 
     _FEATURE_RE = re.compile(r"^\s*Feature\s*:\s*(?P<name>.+?)\s*$", re.IGNORECASE)
+    _RULE_RE = re.compile(r"^\s*Rule\s*:\s*(?P<name>.+?)\s*$", re.IGNORECASE)
+    _BACKGROUND_RE = re.compile(r"^\s*Background\s*:\s*(?P<name>.*?)\s*$", re.IGNORECASE)
     _SCENARIO_RE = re.compile(
         r"^\s*(?P<keyword>Scenario(?:\s+Outline)?|Scenario Template)\s*:\s*(?P<name>.+?)\s*$",
         re.IGNORECASE,
     )
     _STEP_RE = re.compile(r"^\s*(?P<keyword>Given|When|Then|And|But|\*)\s+(?P<text>.+?)\s*$")
-    _EXAMPLES_RE = re.compile(r"^\s*Examples\s*:\s*$", re.IGNORECASE)
+    _EXAMPLES_RE = re.compile(r"^\s*Examples\s*:\s*(?P<name>.*?)\s*$", re.IGNORECASE)
+    _LANGUAGE_RE = re.compile(r"^\s*#\s*language\s*:\s*(?P<language>[\w-]+)\s*$", re.IGNORECASE)
 
     @property
     def supported_extensions(self) -> frozenset[str]:
@@ -38,8 +41,8 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
         LOGGER.debug("Parsing feature file %s", file_path)
         try:
             lines = file_path.read_text(encoding="utf-8-sig").splitlines()
-        except OSError as exc:
-            raise ParserError(f"Unable to read feature file {file_path}") from exc
+        except (OSError, UnicodeError) as exc:
+            raise ParserError(f"Unable to read feature file {file_path}: {exc}") from exc
 
         feature_name = ""
         feature_line = 1
@@ -47,12 +50,20 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
         pending_tags: list[str] = []
         scenarios: list[Scenario] = []
 
+        feature_background_steps: list[Step] = []
+        rule_background_steps: list[Step] = []
+        in_rule = False
+        background_target: list[Step] | None = None
+
         current_name = ""
         current_keyword = ""
         current_line = 1
         current_tags: tuple[str, ...] = ()
         current_steps: list[Step] = []
         current_examples: list[ExamplesTable] = []
+
+        def effective_background() -> list[Step]:
+            return [*feature_background_steps, *rule_background_steps]
 
         def flush_scenario() -> None:
             nonlocal current_name, current_keyword, current_line, current_tags
@@ -82,6 +93,17 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
             stripped = raw.strip()
             line_number = index + 1
 
+            language_match = self._LANGUAGE_RE.match(raw)
+            if language_match:
+                language = language_match.group("language").lower()
+                if language not in {"en", "en-us", "en-gb"}:
+                    raise ParserError(
+                        f"Unsupported Gherkin language '{language}' in {file_path}. "
+                        "ARE currently parses English Cucumber keywords."
+                    )
+                index += 1
+                continue
+
             if not stripped or stripped.startswith("#"):
                 index += 1
                 continue
@@ -101,26 +123,48 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
                 index += 1
                 continue
 
+            rule_match = self._RULE_RE.match(raw)
+            if rule_match:
+                flush_scenario()
+                in_rule = True
+                rule_background_steps = []
+                background_target = None
+                pending_tags.clear()
+                index += 1
+                continue
+
+            if self._BACKGROUND_RE.match(raw):
+                flush_scenario()
+                background_target = rule_background_steps if in_rule else feature_background_steps
+                background_target.clear()
+                pending_tags.clear()
+                index += 1
+                continue
+
             scenario_match = self._SCENARIO_RE.match(raw)
             if scenario_match:
                 flush_scenario()
+                background_target = None
                 current_name = scenario_match.group("name").strip()
                 current_keyword = scenario_match.group("keyword").strip()
                 current_line = line_number
                 current_tags = tuple(pending_tags)
                 pending_tags.clear()
+                current_steps = effective_background()
                 index += 1
                 continue
 
             step_match = self._STEP_RE.match(raw)
-            if step_match and current_name:
-                current_steps.append(
-                    Step(
-                        keyword=step_match.group("keyword").title(),
-                        text=step_match.group("text").strip(),
-                        location=SourceLocation(file_path, line_number),
-                    )
+            if step_match:
+                step = Step(
+                    keyword=step_match.group("keyword").title(),
+                    text=step_match.group("text").strip(),
+                    location=SourceLocation(file_path, line_number),
                 )
+                if current_name:
+                    current_steps.append(step)
+                elif background_target is not None:
+                    background_target.append(step)
                 index += 1
                 continue
 
@@ -173,7 +217,11 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
                 continue
             if stripped.startswith("|"):
                 break
-            if stripped.startswith("@") or self._SCENARIO_RE.match(lines[index]):
+            if (
+                stripped.startswith("@")
+                or self._SCENARIO_RE.match(lines[index])
+                or self._RULE_RE.match(lines[index])
+            ):
                 return None, index
             index += 1
 

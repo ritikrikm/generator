@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from automation_repository_explorer.core.exceptions import ParserError
+from automation_repository_explorer.core.text_reader import read_repository_text
 from automation_repository_explorer.models.domain import (
     JavaClass,
     JavaMethod,
@@ -83,10 +84,13 @@ class JavaParser(RepositoryParser[JavaClass]):
 
     def parse(self, file_path: Path) -> ParseResult[JavaClass]:
         LOGGER.debug("Parsing Java file %s", file_path)
-        try:
-            source = file_path.read_text(encoding="utf-8-sig")
-        except (OSError, UnicodeError) as exc:
-            raise ParserError(f"Unable to read Java file {file_path}: {exc}") from exc
+        read_result = read_repository_text(file_path)
+        source = read_result.text
+        warnings: tuple[str, ...] = ()
+        if read_result.used_fallback:
+            warnings = (
+                f"UTF-8 decoding failed; parsed successfully using {read_result.encoding}.",
+            )
 
         package_match = self._PACKAGE_RE.search(source)
         package_name = package_match.group("package") if package_match else ""
@@ -95,7 +99,7 @@ class JavaParser(RepositoryParser[JavaClass]):
         class_match = self._CLASS_RE.search(source)
         if not class_match:
             if file_path.name.lower() in self._NON_CLASS_JAVA_FILES:
-                return ParseResult(file_path=file_path, items=tuple())
+                return ParseResult(file_path=file_path, items=tuple(), warnings=warnings)
             raise ParserError(f"No Java class/interface/enum/record declaration found in {file_path}")
 
         class_name = class_match.group("name")
@@ -113,6 +117,7 @@ class JavaParser(RepositoryParser[JavaClass]):
                     methods=methods,
                 ),
             ),
+            warnings=warnings,
         )
 
     def _parse_methods(self, source: str, file_path: Path) -> list[JavaMethod]:

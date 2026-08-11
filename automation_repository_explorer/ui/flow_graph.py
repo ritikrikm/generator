@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 
 from automation_repository_explorer.models.graph import GraphEdge, GraphNode, NodeType, RelationType
@@ -22,7 +23,7 @@ def relationship_neighborhood(
     include_examples: bool = False,
     max_nodes: int | None = 120,
 ) -> tuple[tuple[GraphNode, ...], tuple[GraphEdge, ...]]:
-    """Return a focused interactive subgraph around one selected node.
+    """Return a focused bidirectional subgraph around one selected node.
 
     Repository analysis itself remains complete. ``max_nodes`` only limits the visual
     neighborhood so a high-degree node in a large repository cannot create an unreadable
@@ -45,6 +46,63 @@ def relationship_neighborhood(
         if edge.source_id in node_ids and edge.target_id in node_ids
     )
     return nodes, edges
+
+
+def forward_relationship_neighborhood(
+    context: ExplorationContext,
+    selected_node_id: str,
+    *,
+    max_depth: int = 10,
+    include_examples: bool = False,
+    max_nodes: int | None = 1500,
+) -> tuple[tuple[GraphNode, ...], tuple[GraphEdge, ...]]:
+    """Return a forward-only drill graph from the selected node.
+
+    This helper is designed for the local card explorer. It follows outgoing relationships
+    only, which preserves the natural File -> Feature -> Scenario -> Step -> implementation
+    flow and avoids exploding into unrelated callers through shared Step Definitions or
+    wrapper methods. The node cap applies only to visualization, never to repository analysis.
+    """
+
+    selected = context.graph.get_node(selected_node_id)
+    if selected is None:
+        return tuple(), tuple()
+
+    ordered_nodes: list[GraphNode] = []
+    visited: set[str] = set()
+    queue: deque[tuple[str, int]] = deque([(selected_node_id, 0)])
+
+    while queue:
+        node_id, depth = queue.popleft()
+        if node_id in visited or depth > max_depth:
+            continue
+
+        node = context.graph.get_node(node_id)
+        if node is None:
+            continue
+        if not include_examples and node.type == NodeType.EXAMPLE_VALUE:
+            continue
+
+        visited.add(node_id)
+        ordered_nodes.append(node)
+        if max_nodes is not None and max_nodes > 0 and len(ordered_nodes) >= max_nodes:
+            break
+
+        for edge in context.graph.child_edges(node_id):
+            child = context.graph.get_node(edge.target_id)
+            if child is None:
+                continue
+            if not include_examples and child.type == NodeType.EXAMPLE_VALUE:
+                continue
+            queue.append((child.id, depth + 1))
+
+    node_ids = {node.id for node in ordered_nodes}
+    edges = tuple(
+        edge
+        for edge in context.graph.edges
+        if edge.source_id in node_ids and edge.target_id in node_ids
+    )
+    return tuple(ordered_nodes), edges
 
 
 def feature_flow_graph(
@@ -133,7 +191,13 @@ def _include_method_flow(
         if called_node is None or called_node.type not in IMPLEMENTATION_NODE_TYPES:
             continue
         include_edge(call_edge)
-        _include_method_flow(context, call_edge.target_id, include_edge, depth=depth + 1, visited=visited)
+        _include_method_flow(
+            context,
+            call_edge.target_id,
+            include_edge,
+            depth=depth + 1,
+            visited=visited,
+        )
 
 
 def _include_edge_between(
@@ -152,7 +216,11 @@ def _child_edges_by_relation(
     node_id: str,
     relation: RelationType,
 ) -> tuple[GraphEdge, ...]:
-    return tuple(edge for edge in context.graph.child_edges(node_id) if edge.relation == relation)
+    return tuple(
+        edge
+        for edge in context.graph.child_edges(node_id)
+        if edge.relation == relation
+    )
 
 
 def _parent_edges_by_relation(
@@ -160,4 +228,8 @@ def _parent_edges_by_relation(
     node_id: str,
     relation: RelationType,
 ) -> tuple[GraphEdge, ...]:
-    return tuple(edge for edge in context.graph.parent_edges(node_id) if edge.relation == relation)
+    return tuple(
+        edge
+        for edge in context.graph.parent_edges(node_id)
+        if edge.relation == relation
+    )

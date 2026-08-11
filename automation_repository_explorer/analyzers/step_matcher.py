@@ -11,7 +11,7 @@ from automation_repository_explorer.models.domain import JavaMethod, Step
 class StepDefinitionMatcher:
     """Matches feature steps to Java Cucumber step definitions.
 
-    Final matching always uses the compiled Cucumber expression/regular expression.  The
+    Final matching always uses the compiled Cucumber expression/regular expression. The
     lightweight anchor helpers are only an optimization used to narrow large candidate sets;
     patterns that cannot be narrowed safely are deliberately returned without an anchor so
     callers keep them in a fallback bucket.
@@ -34,6 +34,7 @@ class StepDefinitionMatcher:
     _PARAMETER_RE = re.compile(r"\{(?P<name>[^{}]*)\}")
     _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
     _MIN_ANCHOR_LENGTH = 3
+    _REGEX_META = frozenset("\\.*+?()[]{}|$")
 
     def matches(self, step: Step, method: JavaMethod) -> bool:
         """Return True if a Java method's Cucumber annotation matches a step."""
@@ -71,21 +72,22 @@ class StepDefinitionMatcher:
     @classmethod
     @lru_cache(maxsize=4096)
     def anchor_token(cls, pattern: str) -> str | None:
-        """Return a safe literal token that every match for a Cucumber expression must contain.
+        """Return a literal token guaranteed to occur in every match when safely derivable.
 
-        Explicit Java regular expressions are intentionally not narrowed because extracting a
-        guaranteed literal from arbitrary regex safely requires a regex AST.  Plain Cucumber
-        expressions are safe: text outside ``{parameter}`` placeholders is literal in ARE's
-        matcher, so the longest useful literal token is guaranteed to occur in a matching step.
+        For Cucumber expressions, text outside ``{parameter}`` placeholders is literal. For
+        explicit regular expressions, ARE only uses the deterministic literal prefix before the
+        first regex metacharacter. Anything more complex deliberately falls back to full matching.
         """
 
         clean = pattern.strip()
         if not clean:
             return None
-        if clean.startswith("^") or clean.endswith("$"):
-            return None
 
-        literal_only = cls._PARAMETER_RE.sub(" ", clean)
+        if clean.startswith("^") or clean.endswith("$"):
+            literal_only = cls._regex_literal_prefix(clean)
+        else:
+            literal_only = cls._PARAMETER_RE.sub(" ", clean)
+
         tokens = [
             token.lower()
             for token in cls._TOKEN_RE.findall(literal_only)
@@ -94,6 +96,18 @@ class StepDefinitionMatcher:
         if not tokens:
             return None
         return max(tokens, key=len)
+
+    @classmethod
+    def _regex_literal_prefix(cls, pattern: str) -> str:
+        """Return only the definitely-literal prefix of a Java regex pattern."""
+
+        text = pattern[1:] if pattern.startswith("^") else pattern
+        prefix: list[str] = []
+        for char in text:
+            if char in cls._REGEX_META:
+                break
+            prefix.append(char)
+        return "".join(prefix)
 
     @classmethod
     @lru_cache(maxsize=262_144)

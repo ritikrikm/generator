@@ -1,9 +1,8 @@
 # Automation Repository Explorer (ARE)
 
-Automation Repository Explorer is a production-oriented static analysis tool for Java
-Selenium Cucumber automation repositories.
+Automation Repository Explorer is a local static-analysis tool for Java + Selenium + Cucumber automation repositories.
 
-It maps:
+It maps relationships such as:
 
 ```text
 Feature File
@@ -11,136 +10,165 @@ Feature File
 -> Step
 -> Step Definition
 -> Java Method
--> Page Object
--> Wrapper Method
+-> Page / UI Automation Method
+-> Wrapper / Helper Method
 -> Property Key
 -> XPath
 ```
 
-This is not an AI project. It uses no LLMs, OpenAI APIs, embeddings, vector databases,
-semantic search, or machine learning.
+ARE is deterministic static analysis. It does not use LLMs, OpenAI APIs, embeddings, vector databases, or machine learning.
+
+## Local-only execution
+
+ARE is designed to run entirely on the same laptop that contains the repository.
+
+- No Streamlit command is required.
+- No local web server is started.
+- No repository content is uploaded anywhere.
+- Repository folders are read directly from the local file system.
+- Relationship diagrams are generated as temporary local HTML files and opened with a `file://` URL in the default browser.
 
 ## Requirements
 
 - Python 3.12+
+- Tkinter / Tk support included with the Python installation
 
-## Install
+The normal ARE runtime has no required third-party Python packages.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.txt
-```
+`rapidfuzz` is optional. If it is not installed, fuzzy search automatically uses Python's built-in `difflib` fallback.
 
-## Run Tests
+## Windows company laptop
 
-```bash
-pytest
-```
-
-## Run UI
-
-```bash
-streamlit run automation_repository_explorer/ui/app.py
-```
-
-In the sidebar, choose one repository source:
-
-- `Local path` scans a repository folder available on the same machine running ARE.
-- `Upload ZIP` scans a zipped repository, which is the recommended option when ARE is deployed on Streamlit Cloud.
-
-For local testing, scan:
-
-```text
-sample_repo
-```
-
-On a Windows company laptop, run:
+From the repository root, double-click or run:
 
 ```bat
 run_are_windows.bat
 ```
 
-Then open:
+The launcher creates `.venv` if needed and starts:
 
-```text
-http://localhost:8501
+```bash
+python -m automation_repository_explorer.local_app
 ```
 
-Use `Local path` and enter the repository folder path, for example:
+You can also run that command yourself from an activated virtual environment.
 
-```text
-C:\Users\TAT6902\IdeaProjects\huntresspod_ng\huntress_MMSRB
+## Manual setup
+
+Windows:
+
+```bat
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+python -m pip install -r requirements.txt
+python -m automation_repository_explorer.local_app
 ```
 
-Local paths only work when ARE is running on the same machine as the repository. A
-hosted Streamlit Cloud app cannot read files from your laptop by path.
+macOS/Linux:
 
-For Streamlit Community Cloud, use:
-
-```text
-streamlit_app.py
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python -m automation_repository_explorer.local_app
 ```
 
-as the main app file.
+## Using ARE
 
-## Project Structure
+1. Click `Browse` and select the root of any Java + Selenium + Cucumber repository.
+2. Click `Scan repository`.
+3. Watch the real progress bar while ARE discovers files, parses them, builds relationships, and summarizes the graph.
+4. Use `Summary` to see repository counts.
+5. Use `Files` to verify what ARE discovered at any directory depth.
+6. Use `Search & Relationships` to find features, steps, Java methods, property keys, locators, etc.
+7. Select a search result and click `Open relationship graph` to open an offline local relationship diagram.
+8. Check `Scan Issues` for supported files ARE could not fully parse.
+
+## Generic repository goal
+
+ARE does not require team-specific folder names such as:
+
+```text
+steps/
+stepDefs/
+pages/
+pageObjects/
+features/
+resources/
+```
+
+The scanner recursively explores supported files at any folder depth.
+
+For the current product scope, ARE targets repositories built around:
+
+- Java
+- Selenium
+- Cucumber / Gherkin
+- `.properties` locator/config files
+- JSON/XML/YAML configuration resources
+
+The repository itself should not need to be reorganized for ARE.
+
+## Scan diagnostics
+
+A parser problem in one supported file does not stop the complete repository scan.
+
+ARE records the issue and continues exploring everything else. The local UI shows:
+
+```text
+File
+Parser
+Reason
+```
+
+This makes partial coverage visible instead of silently skipping files.
+
+## Run tests
+
+Developer dependencies are separate from the normal local runtime:
+
+```bash
+python -m pip install -r requirements-dev.txt
+pytest
+```
+
+## Project structure
 
 ```text
 automation_repository_explorer/
+  analyzers/
   core/
+  graph/
   models/
   parsers/
-  analyzers/
-  graph/
   search/
   services/
   ui/
+  local_app.py
+  local_graph.py
+
 tests/
 sample_repo/
 docs/
 ```
 
-## Version 1 Capabilities
+## Current capabilities
 
-- Recursive repository scanner
-- Feature parser
-- Java parser
-- Properties parser
-- JSON/XML text indexing
+- Recursive structure-independent repository scanning
+- Real scan progress from 1% to 100%
+- Parse diagnostics instead of silent failures
+- Cucumber feature/scenario/step parsing
+- Background and Rule-aware Gherkin parsing
+- Java class/method parsing independent of folder names
+- Package-private Java method discovery
+- Fully-qualified Cucumber annotation recognition
+- Java method-call indexing with receiver-aware call expressions
+- Conservative method relationship resolution to avoid false same-name links
+- Properties parsing
+- JSON/XML/YAML text-resource indexing
 - Bidirectional relationship graph
 - Exact, partial, case-insensitive, and fuzzy search
 - Reverse mapping
 - Scenario Outline example value mapping
-- Streamlit UI
-- Unit tests
-
-## Relationship Explorer
-
-The Relationship Explorer is file-first. Select an indexed file, then:
-
-- For `.feature` files, choose the feature and scenario to see a flow table and diagram.
-- The flow traces Feature -> Scenario -> Step -> Step Definition -> Java/Page/Wrapper methods -> Property Key -> XPath.
-- Scenario Outline example values are hidden by default and can be enabled with a toggle.
-- For Java/properties/resource files, select a node in that file to see its direct parents, children, and diagram.
-
-## Search
-
-Search supports exact, partial, case-insensitive, and fuzzy matching. Results can be filtered by:
-
-- Search area: all files, feature files, Java files, property files, JSON files, XML files, or other files.
-- Specific indexed file.
-- Graph node type.
-- Scenario Outline example values, which are hidden by default.
-
-When searching all areas, results are grouped into clickable tabs such as Feature files,
-Java files, Property files, JSON files, and XML files. Use Search to find a node, then use
-the `View flow for result` dropdown to inspect its interactive relationship network.
-
-Interactive flow diagrams support panning, zooming, dragging nodes, hover details, and
-click-to-inspect node details. They are intended to show the implementation chain around
-a selected search result, not just duplicate IDE text search.
-
-The graph layout is deterministic and stage-based. Nodes are arranged left-to-right by
-relationship flow, for example Feature -> Scenario -> Step -> Step Definition -> Java/Page
-methods -> Property Key -> XPath.
+- Offline local relationship graph
+- Local desktop UI

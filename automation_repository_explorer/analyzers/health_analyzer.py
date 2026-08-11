@@ -26,6 +26,17 @@ class HealthConfidence(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class HealthCheckDefinition:
+    """Reusable definition shared by analysis and presentation."""
+
+    check_id: str
+    check_name: str
+    severity: HealthSeverity
+    confidence: HealthConfidence
+    explanation: str
+
+
+@dataclass(frozen=True, slots=True)
 class HealthFinding:
     """One evidence-backed repository-health finding."""
 
@@ -35,6 +46,7 @@ class HealthFinding:
     confidence: HealthConfidence
     node_id: str
     message: str
+    explanation: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +64,58 @@ class RepositoryHealthReport:
 
     def count_by_severity(self) -> dict[HealthSeverity, int]:
         return dict(Counter(finding.severity for finding in self.findings))
+
+
+_UNMATCHED_STEP = HealthCheckDefinition(
+    check_id="unmatched_step",
+    check_name="Unmatched Gherkin Step",
+    severity=HealthSeverity.HIGH,
+    confidence=HealthConfidence.HIGH,
+    explanation=(
+        "A parsed Gherkin step has no resolved matching Step Definition. "
+        "The scenario may fail because ARE cannot find an implementation mapping."
+    ),
+)
+_AMBIGUOUS_STEP = HealthCheckDefinition(
+    check_id="ambiguous_step",
+    check_name="Ambiguous Gherkin Step",
+    severity=HealthSeverity.HIGH,
+    confidence=HealthConfidence.HIGH,
+    explanation=(
+        "A parsed Gherkin step resolves to more than one Step Definition. "
+        "The competing mappings should be reviewed."
+    ),
+)
+_ORPHAN_STEP_DEFINITION = HealthCheckDefinition(
+    check_id="orphan_step_definition",
+    check_name="Step Definition With No Known Feature Usage",
+    severity=HealthSeverity.MEDIUM,
+    confidence=HealthConfidence.MEDIUM,
+    explanation=(
+        "No parsed Gherkin step currently maps to this Step Definition. "
+        "It may be obsolete, but runtime or dynamic usage should be checked before cleanup."
+    ),
+)
+_UNREFERENCED_PROPERTY = HealthCheckDefinition(
+    check_id="unreferenced_property",
+    check_name="Property Key With No Known Java Reference",
+    severity=HealthSeverity.REVIEW,
+    confidence=HealthConfidence.MEDIUM,
+    explanation=(
+        "No static Java relationship to this property key was resolved. "
+        "Dynamic key construction may still use it, so this is a review candidate only."
+    ),
+)
+_METHOD_WITHOUT_CALLER = HealthCheckDefinition(
+    check_id="method_without_known_caller",
+    check_name="Method With No Known Caller",
+    severity=HealthSeverity.REVIEW,
+    confidence=HealthConfidence.MEDIUM,
+    explanation=(
+        "No static caller or Step Definition implementation relationship was resolved. "
+        "Hooks, inheritance, reflection, or external callers may still use the method."
+    ),
+)
 
 
 class RepositoryHealthAnalyzer:
@@ -105,27 +169,18 @@ class RepositoryHealthAnalyzer:
         )
         if not matches:
             return (
-                HealthFinding(
-                    check_id="unmatched_step",
-                    check_name="Unmatched Gherkin Step",
-                    severity=HealthSeverity.HIGH,
-                    confidence=HealthConfidence.HIGH,
-                    node_id=node.id,
-                    message="No matching Step Definition was found for this Gherkin step.",
+                _finding(
+                    _UNMATCHED_STEP,
+                    node.id,
+                    "No matching Step Definition was found for this Gherkin step.",
                 ),
             )
         if len(matches) > 1:
             return (
-                HealthFinding(
-                    check_id="ambiguous_step",
-                    check_name="Ambiguous Gherkin Step",
-                    severity=HealthSeverity.HIGH,
-                    confidence=HealthConfidence.HIGH,
-                    node_id=node.id,
-                    message=(
-                        f"This Gherkin step matches {len(matches)} Step Definitions; "
-                        "review the competing mappings."
-                    ),
+                _finding(
+                    _AMBIGUOUS_STEP,
+                    node.id,
+                    f"This Gherkin step matches {len(matches)} Step Definitions.",
                 ),
             )
         return tuple()
@@ -141,16 +196,10 @@ class RepositoryHealthAnalyzer:
         )
         if used_by_step:
             return None
-        return HealthFinding(
-            check_id="orphan_step_definition",
-            check_name="Step Definition With No Known Feature Usage",
-            severity=HealthSeverity.MEDIUM,
-            confidence=HealthConfidence.MEDIUM,
-            node_id=node.id,
-            message=(
-                "No parsed Gherkin step currently maps to this Step Definition. "
-                "Review before cleanup because runtime/dynamic usage may exist."
-            ),
+        return _finding(
+            _ORPHAN_STEP_DEFINITION,
+            node.id,
+            "No parsed Gherkin step currently maps to this Step Definition.",
         )
 
     @staticmethod
@@ -164,16 +213,10 @@ class RepositoryHealthAnalyzer:
         )
         if referenced:
             return None
-        return HealthFinding(
-            check_id="unreferenced_property",
-            check_name="Property Key With No Known Java Reference",
-            severity=HealthSeverity.REVIEW,
-            confidence=HealthConfidence.MEDIUM,
-            node_id=node.id,
-            message=(
-                "No static Java reference to this property key was resolved. "
-                "Dynamic key construction may still use it."
-            ),
+        return _finding(
+            _UNREFERENCED_PROPERTY,
+            node.id,
+            "No static Java reference to this property key was resolved.",
         )
 
     @staticmethod
@@ -187,16 +230,10 @@ class RepositoryHealthAnalyzer:
             or RelationType.IMPLEMENTED_BY in incoming_relations
         ):
             return None
-        return HealthFinding(
-            check_id="method_without_known_caller",
-            check_name="Method With No Known Caller",
-            severity=HealthSeverity.REVIEW,
-            confidence=HealthConfidence.MEDIUM,
-            node_id=node.id,
-            message=(
-                "No static caller or Step Definition implementation relationship was resolved. "
-                "Framework hooks, inheritance, reflection, or external callers may still use it."
-            ),
+        return _finding(
+            _METHOD_WITHOUT_CALLER,
+            node.id,
+            "No static caller or Step Definition implementation relationship was resolved.",
         )
 
     @staticmethod
@@ -209,3 +246,19 @@ class RepositoryHealthAnalyzer:
             int(node.line or 0),
             node.name,
         )
+
+
+def _finding(
+    definition: HealthCheckDefinition,
+    node_id: str,
+    message: str,
+) -> HealthFinding:
+    return HealthFinding(
+        check_id=definition.check_id,
+        check_name=definition.check_name,
+        severity=definition.severity,
+        confidence=definition.confidence,
+        node_id=node_id,
+        message=message,
+        explanation=definition.explanation,
+    )

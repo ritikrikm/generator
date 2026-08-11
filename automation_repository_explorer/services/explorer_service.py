@@ -41,7 +41,7 @@ class ExplorationContext:
 
 
 class ExplorerService:
-    """Facade used by Streamlit UI and tests."""
+    """Facade used by ARE user interfaces and tests."""
 
     def __init__(
         self,
@@ -66,16 +66,12 @@ class ExplorerService:
             progress_callback=progress_callback,
         )
 
-        if progress_callback:
-            progress_callback(85, "Building relationship graph...")
+        graph = self._graph_builder.build(
+            index,
+            progress_callback=progress_callback,
+        )
 
-        graph = self._graph_builder.build(index)
-
         if progress_callback:
-            progress_callback(
-                95,
-                f"Relationship graph built: {len(graph.nodes)} nodes, {len(graph.edges)} edges.",
-            )
             progress_callback(97, "Calculating repository summary...")
 
         summary = self._summarize(index, graph)

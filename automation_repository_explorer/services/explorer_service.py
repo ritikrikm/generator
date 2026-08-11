@@ -10,6 +10,7 @@ from automation_repository_explorer.graph.repository_graph import RepositoryGrap
 from automation_repository_explorer.models.graph import GraphNode, NodeType
 from automation_repository_explorer.search.search_engine import SearchEngine, SearchMode, SearchResult
 from automation_repository_explorer.services.indexer import RepositoryIndex, RepositoryIndexer
+from automation_repository_explorer.services.scanner import ProgressCallback
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,12 +48,39 @@ class ExplorerService:
         self._indexer = indexer or RepositoryIndexer()
         self._graph_builder = graph_builder or RepositoryGraphBuilder()
 
-    def explore(self, repository_path: Path) -> ExplorationContext:
+    def explore(
+        self,
+        repository_path: Path,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ExplorationContext:
         """Build index, graph, and summary for a repository path."""
 
-        index = self._indexer.build_index(repository_path)
+        if progress_callback:
+            progress_callback(1, "Starting repository scan...")
+
+        index = self._indexer.build_index(
+            repository_path,
+            progress_callback=progress_callback,
+        )
+
+        if progress_callback:
+            progress_callback(85, "Building relationship graph...")
+
         graph = self._graph_builder.build(index)
-        return ExplorationContext(index=index, graph=graph, summary=self._summarize(index, graph))
+
+        if progress_callback:
+            progress_callback(
+                95,
+                f"Relationship graph built: {len(graph.nodes)} nodes, {len(graph.edges)} edges.",
+            )
+            progress_callback(97, "Calculating repository summary...")
+
+        summary = self._summarize(index, graph)
+
+        if progress_callback:
+            progress_callback(100, "Repository scan complete.")
+
+        return ExplorationContext(index=index, graph=graph, summary=summary)
 
     def search(
         self,

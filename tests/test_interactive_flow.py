@@ -8,7 +8,11 @@ from pathlib import Path
 from automation_repository_explorer.local_graph import build_local_graph_html
 from automation_repository_explorer.models.graph import NodeType
 from automation_repository_explorer.services.explorer_service import ExplorerService
-from automation_repository_explorer.ui.flow_graph import feature_flow_graph, relationship_neighborhood
+from automation_repository_explorer.ui.flow_graph import (
+    feature_flow_graph,
+    forward_relationship_neighborhood,
+    relationship_neighborhood,
+)
 
 
 class InteractiveFlowTests(unittest.TestCase):
@@ -26,6 +30,27 @@ class InteractiveFlowTests(unittest.TestCase):
         nodes, edges = feature_flow_graph(context, feature, scenarios[:1])
         node_types = {node.type for node in nodes}
 
+        self.assertIn(NodeType.STEP_DEFINITION, node_types)
+        self.assertIn(NodeType.PAGE_OBJECT, node_types)
+        self.assertIn(NodeType.PROPERTY_KEY, node_types)
+        self.assertIn(NodeType.XPATH, node_types)
+        self.assertTrue(edges)
+
+    def test_forward_drill_preserves_feature_to_locator_path(self) -> None:
+        context = ExplorerService().explore(Path("sample_repo"))
+        feature = next(node for node in context.graph.nodes if node.type == NodeType.FEATURE)
+
+        nodes, edges = forward_relationship_neighborhood(
+            context,
+            feature.id,
+            max_depth=14,
+            max_nodes=1500,
+        )
+        node_types = {node.type for node in nodes}
+
+        self.assertEqual(nodes[0].id, feature.id)
+        self.assertIn(NodeType.SCENARIO, node_types)
+        self.assertIn(NodeType.STEP, node_types)
         self.assertIn(NodeType.STEP_DEFINITION, node_types)
         self.assertIn(NodeType.PAGE_OBJECT, node_types)
         self.assertIn(NodeType.PROPERTY_KEY, node_types)

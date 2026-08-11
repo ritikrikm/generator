@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from automation_repository_explorer.core.exceptions import ParserError
+from automation_repository_explorer.core.text_reader import read_repository_text
 from automation_repository_explorer.models.domain import PropertyEntry, SourceLocation
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
 
@@ -13,7 +13,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 class PropertyParser(RepositoryParser[PropertyEntry]):
-    """Parse key/value pairs from .properties files."""
+    """Parse key/value pairs from .properties files without assuming one encoding."""
 
     @property
     def supported_extensions(self) -> frozenset[str]:
@@ -21,10 +21,8 @@ class PropertyParser(RepositoryParser[PropertyEntry]):
 
     def parse(self, file_path: Path) -> ParseResult[PropertyEntry]:
         LOGGER.debug("Parsing properties file %s", file_path)
-        try:
-            lines = file_path.read_text(encoding="utf-8-sig").splitlines()
-        except OSError as exc:
-            raise ParserError(f"Unable to read properties file {file_path}") from exc
+        read_result = read_repository_text(file_path)
+        lines = read_result.text.splitlines()
 
         entries: list[PropertyEntry] = []
         continuation = ""
@@ -62,7 +60,17 @@ class PropertyParser(RepositoryParser[PropertyEntry]):
                     )
                 )
 
-        return ParseResult(file_path=file_path, items=tuple(entries))
+        warnings: tuple[str, ...] = ()
+        if read_result.used_fallback:
+            warnings = (
+                f"UTF-8 decoding failed; parsed successfully using {read_result.encoding}.",
+            )
+
+        return ParseResult(
+            file_path=file_path,
+            items=tuple(entries),
+            warnings=warnings,
+        )
 
     @staticmethod
     def _find_separator(line: str) -> int:

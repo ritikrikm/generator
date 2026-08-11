@@ -19,6 +19,7 @@ class CardSpec:
     subtitle: str = ""
     detail: str = ""
     action_label: str = "Open"
+    secondary_action_label: str = ""
 
 
 def configure_local_styles(style: ttk.Style) -> None:
@@ -34,7 +35,7 @@ def configure_local_styles(style: ttk.Style) -> None:
 
 
 class ScrollableCardList(ttk.Frame):
-    """Scrollable reusable card list with card-level click handling."""
+    """Scrollable reusable card list with primary and optional secondary actions."""
 
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
@@ -69,6 +70,7 @@ class ScrollableCardList(ttk.Frame):
         cards: Iterable[CardSpec],
         *,
         on_open: Callable[[str], None],
+        on_secondary: Callable[[str], None] | None = None,
         selected_id: str | None = None,
         empty_text: str = "Nothing to show.",
     ) -> None:
@@ -117,18 +119,30 @@ class ScrollableCardList(ttk.Frame):
                 detail.pack(anchor=tk.W, fill=tk.X, pady=(5, 0))
                 interactive_widgets.append(detail)
 
-            button = ttk.Button(
-                frame,
+            actions = ttk.Frame(frame)
+            actions.pack(anchor=tk.E, pady=(7, 0))
+            if card.secondary_action_label and on_secondary is not None:
+                secondary_button = ttk.Button(
+                    actions,
+                    text=card.secondary_action_label,
+                    command=lambda card_id=card.id: on_secondary(card_id),
+                )
+                secondary_button.pack(side=tk.LEFT, padx=(0, 6))
+                interactive_widgets.append(secondary_button)
+
+            primary_button = ttk.Button(
+                actions,
                 text=card.action_label,
                 command=lambda card_id=card.id: on_open(card_id),
             )
-            button.pack(anchor=tk.E, pady=(7, 0))
-            interactive_widgets.append(button)
+            primary_button.pack(side=tk.LEFT)
+            interactive_widgets.extend((actions, primary_button))
 
             for widget in interactive_widgets:
                 self._bind_scroll(widget)
-            for widget in interactive_widgets[:-1]:
-                self._bind_card_click(widget, card.id, on_open)
+            for widget in interactive_widgets:
+                if widget not in {actions, primary_button} and not isinstance(widget, ttk.Button):
+                    self._bind_card_click(widget, card.id, on_open)
 
         self._canvas.yview_moveto(0)
 

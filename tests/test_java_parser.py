@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -30,3 +31,47 @@ class JavaParserTest(unittest.TestCase):
         )
         self.assertIn("clickOnSpecificNotification", then_method.calls)
         self.assertEqual(then_method.parameters, ("String group", "String notification"))
+
+    def test_parses_package_private_methods_and_fully_qualified_cucumber_annotations(self) -> None:
+        source = """
+            package team.any.structure;
+
+            class CustomerJourney {
+                @io.cucumber.java.en.Given("a customer with {word} status")
+                void createCustomer(String status) {
+                    helper.createCustomer(status);
+                }
+            }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = Path(directory) / "Anything.java"
+            file_path.write_text(source, encoding="utf-8")
+
+            result = JavaParser().parse(file_path)
+
+        java_class = result.items[0]
+        self.assertEqual(java_class.name, "CustomerJourney")
+        self.assertEqual(len(java_class.methods), 1)
+        method = java_class.methods[0]
+        self.assertEqual(method.name, "createCustomer")
+        self.assertEqual(method.calls, ("createCustomer",))
+        self.assertEqual(method.call_expressions, ("helper.createCustomer",))
+        self.assertIsNotNone(method.step_definition)
+
+    def test_keeps_simple_calls_for_compatibility_and_richer_receiver_calls_for_resolution(self) -> None:
+        source = """
+            class ArbitraryName {
+                public void open() {
+                    ui.click();
+                    BrowserActions.waitUntilReady();
+                }
+            }
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = Path(directory) / "NoConvention.java"
+            file_path.write_text(source, encoding="utf-8")
+
+            method = JavaParser().parse(file_path).items[0].methods[0]
+
+        self.assertEqual(method.calls, ("click", "waitUntilReady"))
+        self.assertEqual(method.call_expressions, ("ui.click", "BrowserActions.waitUntilReady"))

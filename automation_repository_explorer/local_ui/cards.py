@@ -38,7 +38,13 @@ class ScrollableCardList(ttk.Frame):
 
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
-        self._canvas = tk.Canvas(self, highlightthickness=0, borderwidth=0)
+        background = ttk.Style(self).lookup("TFrame", "background") or "SystemButtonFace"
+        self._canvas = tk.Canvas(
+            self,
+            highlightthickness=0,
+            borderwidth=0,
+            background=background,
+        )
         self._scrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self._canvas.yview)
         self._content = ttk.Frame(self._canvas)
         self._window_id = self._canvas.create_window((0, 0), window=self._content, anchor="nw")
@@ -49,9 +55,7 @@ class ScrollableCardList(ttk.Frame):
 
         self._content.bind("<Configure>", self._sync_scroll_region)
         self._canvas.bind("<Configure>", self._sync_content_width)
-        self._canvas.bind("<MouseWheel>", self._on_mousewheel)
-        self._canvas.bind("<Button-4>", lambda _event: self._canvas.yview_scroll(-3, "units"))
-        self._canvas.bind("<Button-5>", lambda _event: self._canvas.yview_scroll(3, "units"))
+        self._bind_scroll(self._canvas)
 
     def clear(self) -> None:
         for child in self._content.winfo_children():
@@ -69,12 +73,9 @@ class ScrollableCardList(ttk.Frame):
         self.clear()
         card_list = tuple(cards)
         if not card_list:
-            ttk.Label(self._content, text=empty_text, wraplength=420).pack(
-                anchor=tk.W,
-                fill=tk.X,
-                padx=8,
-                pady=8,
-            )
+            empty_label = ttk.Label(self._content, text=empty_text, wraplength=420)
+            empty_label.pack(anchor=tk.W, fill=tk.X, padx=8, pady=8)
+            self._bind_scroll(empty_label)
             return
 
         for card in card_list:
@@ -99,7 +100,7 @@ class ScrollableCardList(ttk.Frame):
             )
             title.pack(anchor=tk.W, fill=tk.X)
 
-            labels: list[ttk.Label] = [title]
+            interactive_widgets: list[tk.Misc] = [frame, title]
             if card.subtitle:
                 subtitle = ttk.Label(
                     frame,
@@ -108,11 +109,11 @@ class ScrollableCardList(ttk.Frame):
                     wraplength=430,
                 )
                 subtitle.pack(anchor=tk.W, fill=tk.X, pady=(3, 0))
-                labels.append(subtitle)
+                interactive_widgets.append(subtitle)
             if card.detail:
                 detail = ttk.Label(frame, text=card.detail, wraplength=430)
                 detail.pack(anchor=tk.W, fill=tk.X, pady=(5, 0))
-                labels.append(detail)
+                interactive_widgets.append(detail)
 
             button = ttk.Button(
                 frame,
@@ -120,10 +121,12 @@ class ScrollableCardList(ttk.Frame):
                 command=lambda card_id=card.id: on_open(card_id),
             )
             button.pack(anchor=tk.E, pady=(7, 0))
+            interactive_widgets.append(button)
 
-            self._bind_card_click(frame, card.id, on_open)
-            for label in labels:
-                self._bind_card_click(label, card.id, on_open)
+            for widget in interactive_widgets:
+                self._bind_scroll(widget)
+            for widget in interactive_widgets[:-1]:
+                self._bind_card_click(widget, card.id, on_open)
 
         self._canvas.yview_moveto(0)
 
@@ -137,6 +140,19 @@ class ScrollableCardList(ttk.Frame):
         if event.delta:
             self._canvas.yview_scroll(int(-event.delta / 120) * 3, "units")
         return "break"
+
+    def _scroll_up(self, _event: tk.Event) -> str:
+        self._canvas.yview_scroll(-3, "units")
+        return "break"
+
+    def _scroll_down(self, _event: tk.Event) -> str:
+        self._canvas.yview_scroll(3, "units")
+        return "break"
+
+    def _bind_scroll(self, widget: tk.Misc) -> None:
+        widget.bind("<MouseWheel>", self._on_mousewheel)
+        widget.bind("<Button-4>", self._scroll_up)
+        widget.bind("<Button-5>", self._scroll_down)
 
     @staticmethod
     def _bind_card_click(

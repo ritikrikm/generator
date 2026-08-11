@@ -25,7 +25,7 @@ class GenericTextParsingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "example.feature"
             path.write_text(
-                """Feature: Generic parsing\n"
+                "Feature: Generic parsing\n"
                 "Scenario Outline: Example table\n"
                 "  Given value <a>\n"
                 "Examples:\n"

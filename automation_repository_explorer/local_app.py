@@ -912,7 +912,6 @@ class ARELocalApp:
                 continue
             iid = f"{'in' if incoming else 'out'}-{index}"
             target_map[iid] = connected_node.id
-            self.search_results
             tree.insert(
                 "",
                 tk.END,

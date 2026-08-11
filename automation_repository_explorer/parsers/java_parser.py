@@ -148,7 +148,10 @@ class JavaParser(RepositoryParser[JavaClass]):
                 call
                 for call in self._CALL_RE.finditer(method_body)
                 if call.group("name") not in self._CONTROL_WORDS
-                and call.group("name") != method_name
+                and not (
+                    call.group("name") == method_name
+                    and call.group("receiver") in {None, "this"}
+                )
             )
             calls = tuple(call.group("name") for call in call_matches)
             call_expressions = tuple(self._format_call(call) for call in call_matches)

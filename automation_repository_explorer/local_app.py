@@ -25,7 +25,7 @@ from automation_repository_explorer.local_graph import build_local_graph_html
 from automation_repository_explorer.models.graph import GraphEdge, GraphNode, NodeType
 from automation_repository_explorer.search.search_engine import SearchMode, SearchResult
 from automation_repository_explorer.services.explorer_service import ExplorationContext, ExplorerService
-from automation_repository_explorer.ui.flow_graph import relationship_neighborhood
+from automation_repository_explorer.ui.flow_graph import forward_relationship_neighborhood
 
 
 class ARELocalApp:
@@ -998,11 +998,12 @@ class ARELocalApp:
         if focus_node is None:
             return
 
-        nodes, edges = relationship_neighborhood(
+        nodes, edges = forward_relationship_neighborhood(
             self.context,
             self.current_node_id,
-            max_depth=5,
+            max_depth=14,
             include_examples=False,
+            max_nodes=1500,
         )
         if not nodes:
             messagebox.showinfo(

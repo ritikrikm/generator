@@ -66,15 +66,10 @@ class OptimizedRepositoryGraphBuilder(RepositoryGraphBuilder):
         graph: RepositoryGraph,
         java_classes: tuple[JavaClass, ...],
         methods_by_name: dict[str, list[StepDefinitionMethod]],
+        methods_by_binding_key: dict[str, GraphNode],
         progress_callback: ProgressCallback | None = None,
     ) -> None:
-        """Prefer Eclipse JDT method/constructor bindings; never guess for JDT code."""
-
-        methods_by_binding: dict[str, GraphNode] = {}
-        for methods in methods_by_name.values():
-            for _java_class, method, node in methods:
-                if method.binding_key:
-                    methods_by_binding[method.binding_key] = node
+        """Use JDT declaration/call binding keys; never guess for JDT-analyzed code."""
 
         total_methods = sum(len(java_class.methods) for java_class in java_classes)
         processed = 0
@@ -91,7 +86,7 @@ class OptimizedRepositoryGraphBuilder(RepositoryGraphBuilder):
 
                 if java_class.analysis_backend == "eclipse-jdt":
                     for target_key in method.resolved_call_keys:
-                        target_node = methods_by_binding.get(target_key)
+                        target_node = methods_by_binding_key.get(target_key)
                         if target_node is None or target_node.id == source_id:
                             continue
                         graph.add_edge(

@@ -24,11 +24,12 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ParseIssue:
-    """A supported repository file that ARE could not fully parse."""
+    """A parser diagnostic produced while exploring a supported repository file."""
 
     file_path: Path
     parser_name: str
     message: str
+    severity: str = "error"
 
 
 @dataclass(slots=True)
@@ -76,7 +77,7 @@ class RepositoryIndexer:
         repository_path: Path,
         progress_callback: ProgressCallback | None = None,
     ) -> RepositoryIndex:
-        """Scan and parse a repository while retaining non-fatal parse diagnostics."""
+        """Scan and parse a repository while retaining non-fatal diagnostics."""
 
         scanner = RepositoryScanner(self.supported_extensions)
         files = scanner.scan(repository_path, progress_callback=progress_callback)
@@ -107,6 +108,7 @@ class RepositoryIndexer:
                         file_path=repository_file.path,
                         parser_name="none",
                         message=f"No parser registered for extension {repository_file.extension}",
+                        severity="error",
                     )
                 )
                 continue
@@ -118,6 +120,7 @@ class RepositoryIndexer:
                     file_path=repository_file.path,
                     parser_name=parser.__class__.__name__,
                     message=str(exc) or exc.__class__.__name__,
+                    severity="error",
                 )
                 parse_issues.append(issue)
                 LOGGER.warning(
@@ -128,6 +131,22 @@ class RepositoryIndexer:
                 )
                 continue
 
+            for warning in result.warnings:
+                parse_issues.append(
+                    ParseIssue(
+                        file_path=repository_file.path,
+                        parser_name=parser.__class__.__name__,
+                        message=warning,
+                        severity="warning",
+                    )
+                )
+                LOGGER.warning(
+                    "Parsed %s with %s warning: %s",
+                    repository_file.path,
+                    parser.__class__.__name__,
+                    warning,
+                )
+
             for item in result.items:
                 if isinstance(item, FeatureDocument):
                     features.append(item)
@@ -137,11 +156,13 @@ class RepositoryIndexer:
                     properties.append(item)
 
         if progress_callback:
-            if parse_issues:
+            errors = sum(issue.severity == "error" for issue in parse_issues)
+            warnings = sum(issue.severity == "warning" for issue in parse_issues)
+            if errors or warnings:
                 progress_callback(
                     80,
-                    f"Parsed {total_files - len(parse_issues)}/{total_files} files; "
-                    f"{len(parse_issues)} file(s) need attention.",
+                    f"Parsed {total_files} supported files with {errors} error(s) and "
+                    f"{warnings} warning(s).",
                 )
             else:
                 progress_callback(80, f"Parsed all {total_files} supported files successfully.")

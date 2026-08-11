@@ -21,9 +21,9 @@ LOGGER = logging.getLogger(__name__)
 class JavaParser(RepositoryParser[JavaClass]):
     """Parse Java automation classes without relying on folder or class naming conventions.
 
-    This parser deliberately stays dependency-light, but its heuristics are based on Java
-    syntax/content rather than repository layout. Files can live at any directory depth and
-    classes do not need names such as ``Page``, ``Steps`` or ``Wrapper`` to be discovered.
+    The parser is deterministic and dependency-light. Discovery is based on Java syntax and
+    content, so files can live at any directory depth and classes do not need names such as
+    ``Page``, ``Steps`` or ``Wrapper`` to be indexed.
     """
 
     _PACKAGE_RE = re.compile(r"^\s*package\s+(?P<package>[\w.]+)\s*;", re.MULTILINE)
@@ -35,9 +35,6 @@ class JavaParser(RepositoryParser[JavaClass]):
         r"\b(?P<kind>class|interface|enum|record)\s+"
         r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
     )
-
-    # Supports the normal Cucumber annotation form and fully-qualified annotations such as
-    # @io.cucumber.java.en.Given("..."). The string pattern also tolerates escaped quotes.
     _ANNOTATION_RE = re.compile(
         r"@(?:[A-Za-z_][\w$]*\.)*"
         r"(?P<keyword>Given|When|Then|And|But)\s*\(\s*"
@@ -46,10 +43,6 @@ class JavaParser(RepositoryParser[JavaClass]):
         r"(?P=quote)\s*\)",
         re.DOTALL,
     )
-
-    # Method declarations are intentionally independent of access modifier. This handles
-    # public/protected/private as well as package-private methods used by many team frameworks.
-    # It also accepts common modifier orderings and generic/array return types.
     _METHOD_RE = re.compile(
         r"(?<![\w$.])"
         r"(?P<prefix>(?:(?:public|protected|private|static|final|abstract|synchronized|native|"
@@ -61,10 +54,6 @@ class JavaParser(RepositoryParser[JavaClass]):
         r"(?:throws\s+[^{;]+)?\{",
         re.MULTILINE,
     )
-
-    # Captures both receiver.method(...) and simple method(...). The graph builder can use the
-    # full expression to make conservative relationship decisions rather than blindly linking
-    # every same-named method in the repository.
     _CALL_RE = re.compile(
         r"(?<!\bnew\s)"
         r"(?:(?P<receiver>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\.)?"
@@ -129,31 +118,40 @@ class JavaParser(RepositoryParser[JavaClass]):
         methods: list[JavaMethod] = []
 
         for match in self._METHOD_RE.finditer(source):
-            # Reject common false positives where the regex begins inside a statement instead
-            # of at a declaration boundary.
             if not self._looks_like_method_declaration(source, match.start()):
                 continue
 
             body_start = match.end()
             body_end = self._find_matching_brace(source, body_start - 1)
             if body_end is None:
-                LOGGER.warning("Unable to match method body in %s near line %s", file_path, self._line_for_offset(source, match.start()))
+                LOGGER.warning(
+                    "Unable to match method body in %s near line %s",
+                    file_path,
+                    self._line_for_offset(source, match.start()),
+                )
                 continue
 
             method_source_start = self._annotation_start(source, match.start())
             annotation_text = source[method_source_start : match.start()]
-            step_definition = self._parse_step_definition(annotation_text, source, file_path)
+            step_definition = self._parse_step_definition(
+                annotation_text,
+                source,
+                file_path,
+                annotation_base_offset=method_source_start,
+            )
             method_body = source[body_start:body_end]
             method_line = self._line_for_offset(source, match.start())
             end_line = self._line_for_offset(source, body_end)
             method_name = match.group("name")
 
-            calls = tuple(
-                self._format_call(call)
+            call_matches = tuple(
+                call
                 for call in self._CALL_RE.finditer(method_body)
                 if call.group("name") not in self._CONTROL_WORDS
                 and call.group("name") != method_name
             )
+            calls = tuple(call.group("name") for call in call_matches)
+            call_expressions = tuple(self._format_call(call) for call in call_matches)
             string_literals = tuple(
                 self._decode_java_string(literal.group("value"))
                 for literal in self._STRING_RE.finditer(method_body)
@@ -170,6 +168,7 @@ class JavaParser(RepositoryParser[JavaClass]):
                     calls=calls,
                     string_literals=string_literals,
                     step_definition=step_definition,
+                    call_expressions=call_expressions,
                 )
             )
 
@@ -180,6 +179,7 @@ class JavaParser(RepositoryParser[JavaClass]):
         annotation_text: str,
         source: str,
         file_path: Path,
+        annotation_base_offset: int,
     ) -> StepDefinition | None:
         annotation_match = None
         for annotation_match in self._ANNOTATION_RE.finditer(annotation_text):
@@ -187,8 +187,8 @@ class JavaParser(RepositoryParser[JavaClass]):
         if annotation_match is None:
             return None
 
-        absolute_offset = source.rfind(annotation_match.group(0), 0, len(source))
-        line = self._line_for_offset(source, absolute_offset) if absolute_offset >= 0 else 1
+        absolute_offset = annotation_base_offset + annotation_match.start()
+        line = self._line_for_offset(source, absolute_offset)
         return StepDefinition(
             keyword=annotation_match.group("keyword"),
             pattern=self._decode_java_string(annotation_match.group("pattern")),
@@ -207,7 +207,6 @@ class JavaParser(RepositoryParser[JavaClass]):
         prefix = source[line_start:start].strip()
         if not prefix:
             return True
-        # An annotation can share a line with a method declaration.
         return prefix.startswith("@")
 
     @staticmethod

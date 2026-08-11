@@ -7,6 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from automation_repository_explorer.analyzers.graph_builder import RepositoryGraphBuilder
+from automation_repository_explorer.analyzers.optimized_graph_builder import (
+    OptimizedRepositoryGraphBuilder,
+)
 from automation_repository_explorer.graph.repository_graph import RepositoryGraph
 from automation_repository_explorer.models.graph import GraphNode, NodeType
 from automation_repository_explorer.search.search_engine import SearchEngine, SearchMode, SearchResult
@@ -41,7 +44,7 @@ class ExplorationContext:
 
 
 class ExplorerService:
-    """Facade used by ARE user interfaces and tests."""
+    """Facade used by the local ARE UI and tests."""
 
     def __init__(
         self,
@@ -49,7 +52,7 @@ class ExplorerService:
         graph_builder: RepositoryGraphBuilder | None = None,
     ) -> None:
         self._indexer = indexer or RepositoryIndexer()
-        self._graph_builder = graph_builder or RepositoryGraphBuilder()
+        self._graph_builder = graph_builder or OptimizedRepositoryGraphBuilder()
 
     def explore(
         self,
@@ -66,12 +69,19 @@ class ExplorerService:
             progress_callback=progress_callback,
         )
 
+        if progress_callback:
+            progress_callback(85, "Building relationship graph...")
+
         graph = self._graph_builder.build(
             index,
             progress_callback=progress_callback,
         )
 
         if progress_callback:
+            progress_callback(
+                95,
+                f"Relationship graph built: {len(graph.nodes)} nodes, {len(graph.edges)} edges.",
+            )
             progress_callback(97, "Calculating repository summary...")
 
         summary = self._summarize(index, graph)

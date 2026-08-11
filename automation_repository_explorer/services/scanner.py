@@ -13,21 +13,25 @@ from automation_repository_explorer.models.domain import RepositoryFile
 LOGGER = logging.getLogger(__name__)
 ProgressCallback = Callable[[int, str], None]
 
-IGNORED_DIRECTORIES = {
+_IGNORED_DIRECTORY_NAMES = {
     ".git",
+    ".gradle",
     ".idea",
     ".mvn",
     ".settings",
-    "__MACOSX",
+    ".vscode",
+    "__macosx",
     "__pycache__",
     "allure-results",
     "build",
     "classes",
     "coverage",
     "dist",
+    "generated-sources",
     "generated-test-sources",
     "htmlreport",
     "log",
+    "logs",
     "maven-archiver",
     "maven-status",
     "node_modules",
@@ -37,10 +41,11 @@ IGNORED_DIRECTORIES = {
     "test-output",
     "testreport-archive",
 }
+IGNORED_DIRECTORIES = frozenset(name.lower() for name in _IGNORED_DIRECTORY_NAMES)
 
 
 class RepositoryScanner:
-    """Recursively scans repositories for supported files."""
+    """Recursively scans repositories for supported files at any folder depth."""
 
     def __init__(self, supported_extensions: set[str]) -> None:
         self._supported_extensions = {extension.lower() for extension in supported_extensions}
@@ -50,7 +55,12 @@ class RepositoryScanner:
         repository_path: Path,
         progress_callback: ProgressCallback | None = None,
     ) -> tuple[RepositoryFile, ...]:
-        """Return supported files below the repository path."""
+        """Return supported files below the repository path.
+
+        Folder names such as ``steps``, ``pages``, ``features`` or ``resources`` are never
+        required. ARE walks the complete repository tree and selects files only by parser
+        capability, while excluding common generated/build directories.
+        """
 
         if not repository_path.exists():
             raise RepositoryScanError(f"Repository path does not exist: {repository_path}")
@@ -58,7 +68,7 @@ class RepositoryScanner:
             raise RepositoryScanError(f"Repository path must be a directory: {repository_path}")
 
         if progress_callback:
-            progress_callback(5, "Discovering supported repository files...")
+            progress_callback(5, "Discovering supported files at every folder depth...")
 
         files: list[RepositoryFile] = []
         for root, directories, file_names in os.walk(repository_path):
@@ -82,7 +92,7 @@ class RepositoryScanner:
 
         sorted_files = tuple(sorted(files, key=lambda item: str(item.path)))
         if progress_callback:
-            progress_callback(10, f"Found {len(sorted_files)} supported files.")
+            progress_callback(10, f"Found {len(sorted_files)} supported files across the repository.")
         return sorted_files
 
     @staticmethod

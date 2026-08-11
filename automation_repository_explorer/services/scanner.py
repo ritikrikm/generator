@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 from automation_repository_explorer.core.exceptions import RepositoryScanError
 from automation_repository_explorer.models.domain import RepositoryFile
 
 LOGGER = logging.getLogger(__name__)
+
+ProgressCallback = Callable[[int, str], None]
 
 IGNORED_DIRECTORIES = {
     ".git",
@@ -43,13 +46,20 @@ class RepositoryScanner:
     def __init__(self, supported_extensions: set[str]) -> None:
         self._supported_extensions = {extension.lower() for extension in supported_extensions}
 
-    def scan(self, repository_path: Path) -> tuple[RepositoryFile, ...]:
+    def scan(
+        self,
+        repository_path: Path,
+        progress_callback: ProgressCallback | None = None,
+    ) -> tuple[RepositoryFile, ...]:
         """Return supported files below the repository path."""
 
         if not repository_path.exists():
             raise RepositoryScanError(f"Repository path does not exist: {repository_path}")
         if not repository_path.is_dir():
             raise RepositoryScanError(f"Repository path must be a directory: {repository_path}")
+
+        if progress_callback:
+            progress_callback(5, "Discovering supported repository files...")
 
         files: list[RepositoryFile] = []
         for root, directories, file_names in os.walk(repository_path):
@@ -71,7 +81,10 @@ class RepositoryScanner:
                     continue
                 files.append(RepositoryFile(path=path, extension=extension, size_bytes=size))
 
-        return tuple(sorted(files, key=lambda item: str(item.path)))
+        sorted_files = tuple(sorted(files, key=lambda item: str(item.path)))
+        if progress_callback:
+            progress_callback(10, f"Found {len(sorted_files)} supported files.")
+        return sorted_files
 
     @staticmethod
     def is_ignored_directory(path: Path) -> bool:

@@ -1,65 +1,73 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from pathlib import Path
 
-from automation_repository_explorer.models.graph import NodeType
-from automation_repository_explorer.search.search_engine import SearchMode
-from automation_repository_explorer.services.explorer_service import ExplorerService
+from automation_repository_explorer.analyzers.graph_builder import RepositoryGraphBuilder
+from automation_repository_explorer.models.graph import RelationType
+from automation_repository_explorer.services.indexer import RepositoryIndexer
 
 
 class RelationshipTest(unittest.TestCase):
-    def test_graph_links_feature_to_xpath_and_reverse(self) -> None:
-        context = ExplorerService().explore(Path("sample_repo"))
+    def test_builds_feature_to_step_definition_and_property_relationships(self) -> None:
+        root = Path("sample_repo/huntress_MMSRB")
+        index = RepositoryIndexer().build_index(root)
+        graph = RepositoryGraphBuilder().build(index)
 
-        self.assertEqual(context.summary.features, 1)
-        self.assertEqual(context.summary.scenarios, 2)
-        self.assertEqual(context.summary.steps, 8)
-        self.assertEqual(context.summary.java_classes, 4)
-        self.assertGreaterEqual(context.summary.properties, 20)
+        relations = {edge.relation for edge in graph.edges}
+        self.assertIn(RelationType.MATCHES_STEP_DEFINITION, relations)
+        self.assertIn(RelationType.IMPLEMENTED_BY, relations)
+        self.assertIn(RelationType.USES_PROPERTY, relations)
 
-        xpath_nodes = [
-            node
-            for node in context.graph.nodes
-            if node.type == NodeType.XPATH and "New, Uncalled GIC Maturity Leads" in node.name
-        ]
-        self.assertTrue(xpath_nodes)
+    def test_resolves_unique_and_class_qualified_calls_without_folder_conventions(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            code = root / "odd" / "layout"
+            code.mkdir(parents=True)
+            (code / "Caller.java").write_text(
+                """
+                package arbitrary;
+                class Caller {
+                    public void run() {
+                        Target.openLead();
+                    }
+                }
+                """,
+                encoding="utf-8",
+            )
+            (code / "Target.java").write_text(
+                """
+                package arbitrary;
+                class Target {
+                    public static void openLead() {}
+                }
+                """,
+                encoding="utf-8",
+            )
 
-        traversed = context.graph.traverse(xpath_nodes[0].id)
-        traversed_types = {node.type for node in traversed}
-        self.assertIn(NodeType.PROPERTY_KEY, traversed_types)
-        self.assertIn(NodeType.WRAPPER_METHOD, traversed_types)
-        self.assertIn(NodeType.PAGE_OBJECT, traversed_types)
-        self.assertIn(NodeType.STEP_DEFINITION, traversed_types)
-        self.assertIn(NodeType.STEP, traversed_types)
-        self.assertIn(NodeType.SCENARIO, traversed_types)
-        self.assertIn(NodeType.FEATURE, traversed_types)
+            index = RepositoryIndexer().build_index(root)
+            graph = RepositoryGraphBuilder().build(index)
 
-    def test_search_finds_property_keys_and_feature_content(self) -> None:
-        context = ExplorerService().explore(Path("sample_repo"))
-        service = ExplorerService()
+        call_edges = [edge for edge in graph.edges if edge.relation == RelationType.CALLS]
+        self.assertEqual(len(call_edges), 1)
+        self.assertEqual(call_edges[0].metadata.get("call"), "Target.openLead")
 
-        property_results = service.search(
-            context.graph,
-            "MMSRB.Notification.NewUncalledGICMaturityLeads",
-            mode=SearchMode.EXACT,
-            node_types={NodeType.PROPERTY_KEY},
-        )
-        self.assertEqual(len(property_results), 1)
+    def test_does_not_create_false_edges_for_ambiguous_same_named_methods(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name in ("First", "Second"):
+                (root / f"{name}.java").write_text(
+                    f"class {name} {{ public void click() {{}} }}",
+                    encoding="utf-8",
+                )
+            (root / "Caller.java").write_text(
+                "class Caller { public void run() { helper.click(); } }",
+                encoding="utf-8",
+            )
 
-        fuzzy_results = service.search(context.graph, "maturty", mode=SearchMode.FUZZY)
-        self.assertTrue(any("maturity" in result.node.name.lower() for result in fuzzy_results))
+            index = RepositoryIndexer().build_index(root)
+            graph = RepositoryGraphBuilder().build(index)
 
-    def test_dynamic_example_values_bind_to_steps(self) -> None:
-        context = ExplorerService().explore(Path("sample_repo"))
-
-        example_nodes = [
-            node
-            for node in context.graph.nodes
-            if node.type == NodeType.EXAMPLE_VALUE
-            and "Notification=MMSRB.Notification.NewUncalledGICMaturityLeads" in node.name
-        ]
-        self.assertTrue(example_nodes)
-        children = context.graph.children(example_nodes[0].id)
-        self.assertTrue(any(child.type == NodeType.STEP for child in children))
-        self.assertTrue(any(child.type == NodeType.PROPERTY_KEY for child in children))
+        call_edges = [edge for edge in graph.edges if edge.relation == RelationType.CALLS]
+        self.assertEqual(call_edges, [])

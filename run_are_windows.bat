@@ -8,8 +8,11 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 call ".venv\Scripts\activate.bat"
-python -m pip install --upgrade pip
+
+REM ARE runtime has no required third-party packages.
+REM requirements.txt is intentionally kept for compatibility and future additions.
 python -m pip install -r requirements.txt
-python -m streamlit run streamlit_app.py --server.port 8501
+
+python -m automation_repository_explorer.local_app
 
 endlocal

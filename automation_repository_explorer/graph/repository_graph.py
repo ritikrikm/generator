@@ -14,6 +14,7 @@ class RepositoryGraph:
     def __init__(self) -> None:
         self._nodes: dict[str, GraphNode] = {}
         self._edges: list[GraphEdge] = []
+        self._edge_keys: set[tuple[object, ...]] = set()
         self._children: dict[str, list[GraphEdge]] = defaultdict(list)
         self._parents: dict[str, list[GraphEdge]] = defaultdict(list)
 
@@ -35,12 +36,20 @@ class RepositoryGraph:
         return node
 
     def add_edge(self, edge: GraphEdge) -> None:
-        """Add an edge if source and target nodes exist."""
+        """Add an edge if source and target nodes exist.
+
+        Duplicate detection uses a set rather than repeatedly scanning the complete edge list.
+        This keeps graph construction fast for large enterprise repositories with many nodes.
+        """
 
         if edge.source_id not in self._nodes or edge.target_id not in self._nodes:
             return
-        if edge in self._edges:
+
+        edge_key = self._edge_key(edge)
+        if edge_key in self._edge_keys:
             return
+
+        self._edge_keys.add(edge_key)
         self._edges.append(edge)
         self._children[edge.source_id].append(edge)
         self._parents[edge.target_id].append(edge)
@@ -97,3 +106,10 @@ class RepositoryGraph:
 
     def find_by_ids(self, node_ids: Iterable[str]) -> tuple[GraphNode, ...]:
         return tuple(self._nodes[node_id] for node_id in node_ids if node_id in self._nodes)
+
+    @staticmethod
+    def _edge_key(edge: GraphEdge) -> tuple[object, ...]:
+        """Return a stable hashable identity for an edge including simple metadata."""
+
+        metadata_key = tuple(sorted((key, repr(value)) for key, value in edge.metadata.items()))
+        return (edge.source_id, edge.target_id, edge.relation, metadata_key)

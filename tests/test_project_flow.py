@@ -28,6 +28,16 @@ class ProjectFlowTests(unittest.TestCase):
         step = next(node for node in self.model.children(scenario.id) if node.kind == "Step")
         self.assertTrue(step.name)
 
+    def test_scenario_steps_preserve_source_order(self) -> None:
+        feature_file = self._first_file_under_category("Feature Files")
+        feature = next(node for node in self.model.children(feature_file.id) if node.kind == "Feature")
+        scenario = next(node for node in self.model.children(feature.id) if node.kind == "Scenario")
+        steps = tuple(node for node in self.model.children(scenario.id) if node.kind == "Step")
+
+        self.assertGreater(len(steps), 1)
+        source_lines = [int(node.line or 0) for node in steps]
+        self.assertEqual(source_lines, sorted(source_lines))
+
     def test_property_file_can_reach_xpath(self) -> None:
         category = next(
             node for node in self.model.children(self.model.root_id) if node.name == "Property Files"
@@ -47,13 +57,18 @@ class ProjectFlowTests(unittest.TestCase):
             queue.extend(children)
         self.assertTrue(found_xpath)
 
-    def test_project_flow_html_is_local_progressive_and_paged(self) -> None:
+    def test_project_flow_html_is_local_progressive_paged_and_sequential(self) -> None:
         rendered = build_local_project_flow_html(self.model)
         self.assertNotIn("https://", rendered)
         self.assertIn("Project Home", rendered)
         self.assertIn("Previous cards", rendered)
         self.assertIn("Next cards", rendered)
         self.assertIn("PAGE_SIZE = 24", rendered)
+        self.assertIn("GRID_COLUMNS = 3", rendered)
+        self.assertIn("index % columns", rendered)
+        self.assertIn("Math.floor(index / columns)", rendered)
+        self.assertIn("page.start + index + 1", rendered)
+        self.assertIn("Do not sort here", rendered)
         self.assertIn("Edit File", rendered)
 
     def _first_file_under_category(self, category_name: str):

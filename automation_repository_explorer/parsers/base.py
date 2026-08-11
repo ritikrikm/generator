@@ -12,10 +12,11 @@ TParsed = TypeVar("TParsed")
 
 @dataclass(frozen=True, slots=True)
 class ParseResult(Generic[TParsed]):
-    """Parser output for a single file."""
+    """Parser output for a single file, including recoverable diagnostics."""
 
     file_path: Path
     items: tuple[TParsed, ...]
+    warnings: tuple[str, ...] = ()
 
 
 class RepositoryParser(ABC, Generic[TParsed]):

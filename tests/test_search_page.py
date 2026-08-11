@@ -1,63 +1,53 @@
-"""Tests for Search page filtering helpers."""
+"""Tests for repository search behavior used by the local desktop UI."""
 
 from __future__ import annotations
 
 import unittest
 from pathlib import Path
 
+from automation_repository_explorer.models.graph import NodeType
 from automation_repository_explorer.search.search_engine import SearchMode
 from automation_repository_explorer.services.explorer_service import ExplorerService
-from automation_repository_explorer.ui.pages.search import (
-    SearchArea,
-    _filter_results,
-    _group_results,
-)
 
 
-class SearchPageTests(unittest.TestCase):
-    """Validate area grouping and file filtering used by the Streamlit search page."""
+class SearchTests(unittest.TestCase):
+    """Validate search without importing any web UI framework."""
 
-    def test_search_results_group_by_repository_area(self) -> None:
-        context = ExplorerService().explore(Path("sample_repo"))
-        results = ExplorerService().search(
+    def test_search_returns_results_across_repository_areas(self) -> None:
+        service = ExplorerService()
+        context = service.explore(Path("sample_repo"))
+        results = service.search(
             context.graph,
             "Maturity",
             mode=SearchMode.CASE_INSENSITIVE,
             limit=500,
         )
 
-        filtered = _filter_results(
-            results,
-            area=SearchArea.ALL,
-            selected_file=None,
-            include_examples=False,
-        )
-        grouped = _group_results(filtered)
+        self.assertTrue(results)
+        suffixes = {
+            result.node.file_path.suffix
+            for result in results
+            if result.node.file_path is not None
+        }
+        self.assertIn(".feature", suffixes)
+        self.assertTrue({".properties", ".java"} & suffixes)
 
-        self.assertIn(SearchArea.FEATURE, grouped)
-        self.assertIn(SearchArea.PROPERTY, grouped)
-
-    def test_search_results_can_filter_to_feature_files(self) -> None:
-        context = ExplorerService().explore(Path("sample_repo"))
-        results = ExplorerService().search(
+    def test_search_can_filter_to_feature_nodes(self) -> None:
+        service = ExplorerService()
+        context = service.explore(Path("sample_repo"))
+        results = service.search(
             context.graph,
             "Maturity",
             mode=SearchMode.CASE_INSENSITIVE,
+            node_types={NodeType.FEATURE, NodeType.SCENARIO, NodeType.STEP},
             limit=500,
         )
 
-        filtered = _filter_results(
-            results,
-            area=SearchArea.FEATURE,
-            selected_file=None,
-            include_examples=False,
-        )
-
-        self.assertTrue(filtered)
+        self.assertTrue(results)
         self.assertTrue(
             all(
-                result.node.file_path and result.node.file_path.suffix == ".feature"
-                for result in filtered
+                result.node.type in {NodeType.FEATURE, NodeType.SCENARIO, NodeType.STEP}
+                for result in results
             )
         )
 

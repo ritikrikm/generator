@@ -272,7 +272,7 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
 
     @staticmethod
     def _split_table_row(row: str) -> list[str]:
-        """Split a Gherkin table row while preserving escaped pipes (\|)."""
+        r"""Split a Gherkin table row while preserving escaped pipes (\|)."""
 
         text = row.strip()
         if text.startswith("|"):

@@ -19,30 +19,57 @@ LOGGER = logging.getLogger(__name__)
 
 
 class JavaParser(RepositoryParser[JavaClass]):
-    """Parse Java classes, methods, annotations, calls, and string literals.
+    """Parse Java automation classes without relying on folder or class naming conventions.
 
-    The parser is intentionally deterministic and dependency-light. It uses stable static
-    heuristics and exposes the same output model that a future tree-sitter adapter can fill.
+    This parser deliberately stays dependency-light, but its heuristics are based on Java
+    syntax/content rather than repository layout. Files can live at any directory depth and
+    classes do not need names such as ``Page``, ``Steps`` or ``Wrapper`` to be discovered.
     """
 
     _PACKAGE_RE = re.compile(r"^\s*package\s+(?P<package>[\w.]+)\s*;", re.MULTILINE)
-    _IMPORT_RE = re.compile(r"^\s*import\s+(?P<import>[\w.*]+)\s*;", re.MULTILINE)
-    _CLASS_RE = re.compile(
-        r"\b(?P<kind>class|interface|enum)\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
-    )
-    _ANNOTATION_RE = re.compile(
-        r"@(?P<keyword>Given|When|Then|And|But)\s*\(\s*(?P<quote>\"|')(?P<pattern>.*?)(?P=quote)\s*\)",
-        re.DOTALL,
-    )
-    _METHOD_RE = re.compile(
-        r"(?P<prefix>(?:public|private|protected)\s+"
-        r"(?:(?:static|final|synchronized)\s+)*)"
-        r"(?P<return>[A-Za-z_][\w<>\[\].?,\s]*?)\s+"
-        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*"
-        r"\((?P<params>[^)]*)\)\s*(?:throws\s+[^{]+)?\{",
+    _IMPORT_RE = re.compile(
+        r"^\s*import\s+(?:static\s+)?(?P<import>[\w.*]+)\s*;",
         re.MULTILINE,
     )
-    _CALL_RE = re.compile(r"(?<!new\s)\b(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\(")
+    _CLASS_RE = re.compile(
+        r"\b(?P<kind>class|interface|enum|record)\s+"
+        r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
+    )
+
+    # Supports the normal Cucumber annotation form and fully-qualified annotations such as
+    # @io.cucumber.java.en.Given("..."). The string pattern also tolerates escaped quotes.
+    _ANNOTATION_RE = re.compile(
+        r"@(?:[A-Za-z_][\w$]*\.)*"
+        r"(?P<keyword>Given|When|Then|And|But)\s*\(\s*"
+        r'(?P<quote>["\'])'
+        r"(?P<pattern>(?:\\.|(?!\1).)*?)"
+        r"(?P=quote)\s*\)",
+        re.DOTALL,
+    )
+
+    # Method declarations are intentionally independent of access modifier. This handles
+    # public/protected/private as well as package-private methods used by many team frameworks.
+    # It also accepts common modifier orderings and generic/array return types.
+    _METHOD_RE = re.compile(
+        r"(?<![\w$.])"
+        r"(?P<prefix>(?:(?:public|protected|private|static|final|abstract|synchronized|native|"
+        r"strictfp|default)\s+)*)"
+        r"(?:<[^>{};]+>\s+)?"
+        r"(?P<return>[A-Za-z_$][\w$<>\[\].?,\s&]*)\s+"
+        r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*"
+        r"\((?P<params>[^()]*)\)\s*"
+        r"(?:throws\s+[^{;]+)?\{",
+        re.MULTILINE,
+    )
+
+    # Captures both receiver.method(...) and simple method(...). The graph builder can use the
+    # full expression to make conservative relationship decisions rather than blindly linking
+    # every same-named method in the repository.
+    _CALL_RE = re.compile(
+        r"(?<!\bnew\s)"
+        r"(?:(?P<receiver>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*\.)?"
+        r"(?P<name>[A-Za-z_$][A-Za-z0-9_$]*)\s*\("
+    )
     _STRING_RE = re.compile(r'"(?P<value>(?:\\.|[^"\\])*)"')
     _CONTROL_WORDS = frozenset(
         {
@@ -58,6 +85,7 @@ class JavaParser(RepositoryParser[JavaClass]):
             "this",
             "try",
             "synchronized",
+            "assert",
         }
     )
 
@@ -69,8 +97,8 @@ class JavaParser(RepositoryParser[JavaClass]):
         LOGGER.debug("Parsing Java file %s", file_path)
         try:
             source = file_path.read_text(encoding="utf-8-sig")
-        except OSError as exc:
-            raise ParserError(f"Unable to read Java file {file_path}") from exc
+        except (OSError, UnicodeError) as exc:
+            raise ParserError(f"Unable to read Java file {file_path}: {exc}") from exc
 
         package_match = self._PACKAGE_RE.search(source)
         package_name = package_match.group("package") if package_match else ""
@@ -78,7 +106,7 @@ class JavaParser(RepositoryParser[JavaClass]):
 
         class_match = self._CLASS_RE.search(source)
         if not class_match:
-            return ParseResult(file_path=file_path, items=tuple())
+            raise ParserError(f"No Java class/interface/enum/record declaration found in {file_path}")
 
         class_name = class_match.group("name")
         class_line = self._line_for_offset(source, class_match.start())
@@ -101,9 +129,15 @@ class JavaParser(RepositoryParser[JavaClass]):
         methods: list[JavaMethod] = []
 
         for match in self._METHOD_RE.finditer(source):
+            # Reject common false positives where the regex begins inside a statement instead
+            # of at a declaration boundary.
+            if not self._looks_like_method_declaration(source, match.start()):
+                continue
+
             body_start = match.end()
             body_end = self._find_matching_brace(source, body_start - 1)
             if body_end is None:
+                LOGGER.warning("Unable to match method body in %s near line %s", file_path, self._line_for_offset(source, match.start()))
                 continue
 
             method_source_start = self._annotation_start(source, match.start())
@@ -115,12 +149,13 @@ class JavaParser(RepositoryParser[JavaClass]):
             method_name = match.group("name")
 
             calls = tuple(
-                call.group("name")
+                self._format_call(call)
                 for call in self._CALL_RE.finditer(method_body)
-                if call.group("name") not in self._CONTROL_WORDS and call.group("name") != method_name
+                if call.group("name") not in self._CONTROL_WORDS
+                and call.group("name") != method_name
             )
             string_literals = tuple(
-                bytes(literal.group("value"), "utf-8").decode("unicode_escape")
+                self._decode_java_string(literal.group("value"))
                 for literal in self._STRING_RE.finditer(method_body)
             )
 
@@ -152,13 +187,28 @@ class JavaParser(RepositoryParser[JavaClass]):
         if annotation_match is None:
             return None
 
-        absolute_offset = source.find(annotation_match.group(0))
+        absolute_offset = source.rfind(annotation_match.group(0), 0, len(source))
         line = self._line_for_offset(source, absolute_offset) if absolute_offset >= 0 else 1
         return StepDefinition(
             keyword=annotation_match.group("keyword"),
-            pattern=annotation_match.group("pattern"),
+            pattern=self._decode_java_string(annotation_match.group("pattern")),
             location=SourceLocation(file_path, line),
         )
+
+    @staticmethod
+    def _format_call(match: re.Match[str]) -> str:
+        receiver = match.group("receiver")
+        name = match.group("name")
+        return f"{receiver}.{name}" if receiver else name
+
+    @staticmethod
+    def _looks_like_method_declaration(source: str, start: int) -> bool:
+        line_start = source.rfind("\n", 0, start) + 1
+        prefix = source[line_start:start].strip()
+        if not prefix:
+            return True
+        # An annotation can share a line with a method declaration.
+        return prefix.startswith("@")
 
     @staticmethod
     def _annotation_start(source: str, method_start: int) -> int:
@@ -177,19 +227,55 @@ class JavaParser(RepositoryParser[JavaClass]):
     def _find_matching_brace(source: str, open_brace_index: int) -> int | None:
         depth = 0
         in_string = False
+        in_char = False
+        in_line_comment = False
+        in_block_comment = False
         escaped = False
-        for index in range(open_brace_index, len(source)):
+        index = open_brace_index
+
+        while index < len(source):
             char = source[index]
-            if in_string:
+            next_char = source[index + 1] if index + 1 < len(source) else ""
+
+            if in_line_comment:
+                if char == "\n":
+                    in_line_comment = False
+                index += 1
+                continue
+            if in_block_comment:
+                if char == "*" and next_char == "/":
+                    in_block_comment = False
+                    index += 2
+                    continue
+                index += 1
+                continue
+            if in_string or in_char:
                 if escaped:
                     escaped = False
                 elif char == "\\":
                     escaped = True
-                elif char == '"':
+                elif in_string and char == '"':
                     in_string = False
+                elif in_char and char == "'":
+                    in_char = False
+                index += 1
+                continue
+
+            if char == "/" and next_char == "/":
+                in_line_comment = True
+                index += 2
+                continue
+            if char == "/" and next_char == "*":
+                in_block_comment = True
+                index += 2
                 continue
             if char == '"':
                 in_string = True
+                index += 1
+                continue
+            if char == "'":
+                in_char = True
+                index += 1
                 continue
             if char == "{":
                 depth += 1
@@ -197,6 +283,7 @@ class JavaParser(RepositoryParser[JavaClass]):
                 depth -= 1
                 if depth == 0:
                     return index
+            index += 1
         return None
 
     @staticmethod
@@ -204,11 +291,36 @@ class JavaParser(RepositoryParser[JavaClass]):
         if not params.strip():
             return []
         result: list[str] = []
-        for param in params.split(","):
-            clean_param = " ".join(param.strip().split())
-            if clean_param:
-                result.append(clean_param)
+        current: list[str] = []
+        generic_depth = 0
+        annotation_depth = 0
+        for char in params:
+            if char == "<":
+                generic_depth += 1
+            elif char == ">" and generic_depth:
+                generic_depth -= 1
+            elif char == "(":
+                annotation_depth += 1
+            elif char == ")" and annotation_depth:
+                annotation_depth -= 1
+            if char == "," and generic_depth == 0 and annotation_depth == 0:
+                clean_param = " ".join("".join(current).strip().split())
+                if clean_param:
+                    result.append(clean_param)
+                current = []
+                continue
+            current.append(char)
+        clean_param = " ".join("".join(current).strip().split())
+        if clean_param:
+            result.append(clean_param)
         return result
+
+    @staticmethod
+    def _decode_java_string(value: str) -> str:
+        try:
+            return bytes(value, "utf-8").decode("unicode_escape")
+        except UnicodeDecodeError:
+            return value
 
     @staticmethod
     def _line_for_offset(source: str, offset: int) -> int:

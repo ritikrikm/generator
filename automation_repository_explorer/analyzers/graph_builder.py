@@ -62,6 +62,7 @@ class RepositoryGraphBuilder:
     ) -> RepositoryGraph:
         graph = RepositoryGraph()
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]] = {}
+        methods_by_binding_key: dict[str, GraphNode] = {}
         properties_by_key = {entry.key: entry for entry in index.properties}
         property_nodes: dict[str, GraphNode] = {}
 
@@ -95,6 +96,8 @@ class RepositoryGraphBuilder:
             for method in java_class.methods:
                 method_node = self._add_java_method(graph, java_class, method, class_node)
                 methods_by_name.setdefault(method.name, []).append((java_class, method, method_node))
+                if method.binding_key:
+                    methods_by_binding_key[method.binding_key] = method_node
 
         if progress_callback:
             progress_callback(88, "Building graph: adding properties and locators...")
@@ -113,6 +116,7 @@ class RepositoryGraphBuilder:
             graph,
             index.java_classes,
             methods_by_name,
+            methods_by_binding_key,
             progress_callback=progress_callback,
         )
 
@@ -196,7 +200,12 @@ class RepositoryGraphBuilder:
                 name=java_class.qualified_name,
                 file_path=java_class.location.file_path,
                 line=java_class.location.line,
-                metadata={"imports": java_class.imports, "package": java_class.package},
+                metadata={
+                    "imports": java_class.imports,
+                    "package": java_class.package,
+                    "binding_key": java_class.binding_key,
+                    "analysis_backend": java_class.analysis_backend,
+                },
             )
         )
         graph.add_edge(
@@ -225,6 +234,11 @@ class RepositoryGraphBuilder:
                     "calls": method.calls,
                     "call_expressions": method.call_expressions,
                     "string_literals": method.string_literals,
+                    "is_constructor": method.is_constructor,
+                    "binding_key": method.binding_key,
+                    "resolved_call_keys": method.resolved_call_keys,
+                    "unresolved_calls": method.unresolved_call_expressions,
+                    "analysis_backend": java_class.analysis_backend,
                 },
             )
         )
@@ -358,9 +372,10 @@ class RepositoryGraphBuilder:
         graph: RepositoryGraph,
         java_classes: tuple[JavaClass, ...],
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]],
+        methods_by_binding_key: dict[str, GraphNode],
         progress_callback: ProgressCallback | None = None,
     ) -> None:
-        """Link calls only when static evidence identifies a deterministic target."""
+        """Link JDT-analyzed calls by compiler binding key; keep legacy fallback only for tests."""
 
         total_methods = sum(len(java_class.methods) for java_class in java_classes)
         processed_methods = 0
@@ -372,28 +387,51 @@ class RepositoryGraphBuilder:
         for java_class in java_classes:
             for method in java_class.methods:
                 source_id = self._method_id(java_class, method)
-                call_expressions = method.call_expressions or method.calls
-                for call_expression in call_expressions:
-                    receiver, call_name = self._split_call_expression(call_expression)
-                    candidates = methods_by_name.get(call_name, [])
-                    resolved = self._resolve_call_candidates(
-                        java_class=java_class,
-                        receiver=receiver,
-                        candidates=candidates,
-                    )
-                    if len(resolved) != 1:
-                        continue
-                    _target_class, _target_method, target_node = resolved[0]
-                    if target_node.id == source_id:
-                        continue
-                    graph.add_edge(
-                        GraphEdge(
-                            source_id,
-                            target_node.id,
-                            RelationType.CALLS,
-                            metadata={"call": call_expression, "resolution": "deterministic"},
+
+                if java_class.analysis_backend == "eclipse-jdt":
+                    for binding_key in method.resolved_call_keys:
+                        target_node = methods_by_binding_key.get(binding_key)
+                        if target_node is None or target_node.id == source_id:
+                            continue
+                        graph.add_edge(
+                            GraphEdge(
+                                source_id,
+                                target_node.id,
+                                RelationType.CALLS,
+                                metadata={
+                                    "binding_key": binding_key,
+                                    "resolution": "eclipse-jdt-binding",
+                                },
+                            )
                         )
-                    )
+                else:
+                    # Compatibility fallback for synthetic/legacy test fixtures only. Real scans on
+                    # this branch are JDT-backed and never replace a missing binding with a guess.
+                    call_expressions = method.call_expressions or method.calls
+                    for call_expression in call_expressions:
+                        receiver, call_name = self._split_call_expression(call_expression)
+                        candidates = methods_by_name.get(call_name, [])
+                        resolved = self._resolve_call_candidates(
+                            java_class=java_class,
+                            receiver=receiver,
+                            candidates=candidates,
+                        )
+                        if len(resolved) != 1:
+                            continue
+                        _target_class, _target_method, target_node = resolved[0]
+                        if target_node.id == source_id:
+                            continue
+                        graph.add_edge(
+                            GraphEdge(
+                                source_id,
+                                target_node.id,
+                                RelationType.CALLS,
+                                metadata={
+                                    "call": call_expression,
+                                    "resolution": "legacy-deterministic",
+                                },
+                            )
+                        )
 
                 processed_methods += 1
                 if progress_callback and total_methods:
@@ -582,7 +620,11 @@ class RepositoryGraphBuilder:
 
     @staticmethod
     def _simple_call_name(call_expression: str) -> str:
-        return call_expression.rsplit(".", 1)[-1]
+        clean = call_expression.strip()
+        if clean.startswith("new "):
+            clean = clean[4:]
+        clean = clean.split("(", 1)[0]
+        return clean.rsplit(".", 1)[-1]
 
     @staticmethod
     def _file_id(path: Path) -> str:

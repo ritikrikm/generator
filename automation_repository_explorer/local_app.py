@@ -1,8 +1,7 @@
 """Local desktop application for Automation Repository Explorer.
 
-This is the default ARE UI for company laptops. It runs entirely on the local machine,
-uses only Python's standard-library Tkinter UI, and never starts a web server or uploads
-repository content anywhere.
+ARE runs entirely on the local machine using Python's standard-library Tkinter UI.
+Repository content is never uploaded and no local web server is started.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ except ImportError as exc:  # pragma: no cover - depends on local Python install
     ) from exc
 
 from automation_repository_explorer.local_graph import build_local_graph_html
-from automation_repository_explorer.models.graph import GraphEdge, NodeType
+from automation_repository_explorer.models.graph import GraphEdge, GraphNode, NodeType
 from automation_repository_explorer.search.search_engine import SearchMode, SearchResult
 from automation_repository_explorer.services.explorer_service import ExplorationContext, ExplorerService
 from automation_repository_explorer.ui.flow_graph import relationship_neighborhood
@@ -38,6 +37,15 @@ class ARELocalApp:
         self.search_results: tuple[SearchResult, ...] = tuple()
         self.scan_thread: threading.Thread | None = None
 
+        # Interactive relationship-explorer state.
+        self.current_node_id: str | None = None
+        self.back_history: list[str] = []
+        self.forward_history: list[str] = []
+        self.incoming_targets: dict[str, str] = {}
+        self.outgoing_targets: dict[str, str] = {}
+        self.current_score: float | None = None
+        self.current_matched_text: str | None = None
+
         self.repository_var = tk.StringVar()
         self.progress_var = tk.IntVar(value=0)
         self.status_var = tk.StringVar(value="Select a Java/Selenium/Cucumber repository to scan.")
@@ -45,9 +53,15 @@ class ARELocalApp:
         self.search_mode_var = tk.StringVar(value=SearchMode.CASE_INSENSITIVE.value)
         self.node_type_var = tk.StringVar(value="All")
 
+        self.current_name_var = tk.StringVar(value="No node selected")
+        self.current_type_var = tk.StringVar(value="")
+        self.current_file_var = tk.StringVar(value="")
+        self.current_line_var = tk.StringVar(value="")
+        self.current_counts_var = tk.StringVar(value="Incoming: 0   Outgoing: 0")
+
         self.root.title("Automation Repository Explorer")
-        self.root.geometry("1360x900")
-        self.root.minsize(1040, 700)
+        self.root.geometry("1480x940")
+        self.root.minsize(1100, 720)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -56,9 +70,11 @@ class ARELocalApp:
 
         header = ttk.Frame(root_frame)
         header.pack(fill=tk.X)
-        ttk.Label(header, text="Automation Repository Explorer", font=("Segoe UI", 18, "bold")).pack(
-            anchor=tk.W
-        )
+        ttk.Label(
+            header,
+            text="Automation Repository Explorer",
+            font=("Segoe UI", 18, "bold"),
+        ).pack(anchor=tk.W)
         ttk.Label(
             header,
             text="Local static analysis for Java + Selenium + Cucumber repositories",
@@ -109,10 +125,9 @@ class ARELocalApp:
         self._build_issues_tab()
 
     def _build_summary_tab(self) -> None:
-        columns = ("Metric", "Value")
         self.summary_tree = ttk.Treeview(
             self.summary_tab,
-            columns=columns,
+            columns=("Metric", "Value"),
             show="headings",
             height=14,
         )
@@ -124,11 +139,7 @@ class ARELocalApp:
 
     def _build_files_tab(self) -> None:
         columns = ("Type", "Path", "Size")
-        self.files_tree = ttk.Treeview(
-            self.files_tab,
-            columns=columns,
-            show="headings",
-        )
+        self.files_tree = ttk.Treeview(self.files_tab, columns=columns, show="headings")
         for name in columns:
             self.files_tree.heading(name, text=name)
         self.files_tree.column("Type", width=90, anchor=tk.W)
@@ -179,7 +190,7 @@ class ARELocalApp:
         content_pane.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
 
         result_frame = ttk.LabelFrame(content_pane, text="Search Results", padding=6)
-        content_pane.add(result_frame, minsize=180, stretch="always")
+        content_pane.add(result_frame, minsize=170, stretch="always")
 
         columns = ("Score", "Type", "Name", "File", "Line")
         self.search_tree = ttk.Treeview(
@@ -187,7 +198,7 @@ class ARELocalApp:
             columns=columns,
             show="headings",
             selectmode="browse",
-            height=10,
+            height=8,
         )
         for name in columns:
             self.search_tree.heading(name, text=name)
@@ -197,59 +208,71 @@ class ARELocalApp:
         self.search_tree.column("File", width=500, anchor=tk.W)
         self.search_tree.column("Line", width=70, anchor=tk.E)
 
-        result_scrollbar = ttk.Scrollbar(
-            result_frame,
-            orient=tk.VERTICAL,
-            command=self.search_tree.yview,
-        )
+        result_scrollbar = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.search_tree.yview)
         self.search_tree.configure(yscrollcommand=result_scrollbar.set)
         self.search_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         result_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.search_tree.bind("<<TreeviewSelect>>", self._show_selected_result)
 
-        relationship_frame = ttk.LabelFrame(content_pane, text="Selected Node & Relationships", padding=6)
-        content_pane.add(relationship_frame, minsize=300, stretch="always")
+        explorer_frame = ttk.LabelFrame(content_pane, text="Interactive Relationship Explorer", padding=6)
+        content_pane.add(explorer_frame, minsize=360, stretch="always")
 
-        action_frame = ttk.Frame(relationship_frame)
+        action_frame = ttk.Frame(explorer_frame)
         action_frame.pack(fill=tk.X, pady=(0, 6))
+
+        self.back_button = ttk.Button(action_frame, text="← Back", command=self._go_back, state=tk.DISABLED)
+        self.back_button.pack(side=tk.LEFT)
+        self.forward_button = ttk.Button(
+            action_frame,
+            text="Forward →",
+            command=self._go_forward,
+            state=tk.DISABLED,
+        )
+        self.forward_button.pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(
             action_frame,
             text="Open relationship graph",
-            command=self._open_selected_graph,
-        ).pack(side=tk.LEFT)
+            command=self._open_current_graph,
+        ).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Label(
             action_frame,
-            text=(
-                "Immediate incoming/outgoing relationships are shown below. "
-                "Open graph shows the wider local relationship neighborhood."
-            ),
-        ).pack(side=tk.LEFT, padx=(10, 0))
+            text="Click any Incoming or Outgoing relationship row to continue exploring that node.",
+        ).pack(side=tk.LEFT, padx=(12, 0))
 
-        self.relationship_notebook = ttk.Notebook(relationship_frame)
+        relationship_pane = tk.PanedWindow(
+            explorer_frame,
+            orient=tk.HORIZONTAL,
+            sashwidth=6,
+            sashrelief=tk.RAISED,
+            borderwidth=0,
+        )
+        relationship_pane.pack(fill=tk.BOTH, expand=True)
+
+        relationship_left = ttk.Frame(relationship_pane)
+        relationship_pane.add(relationship_left, minsize=650, stretch="always")
+
+        self.relationship_notebook = ttk.Notebook(relationship_left)
         self.relationship_notebook.pack(fill=tk.BOTH, expand=True)
 
-        details_tab = ttk.Frame(self.relationship_notebook, padding=6)
         incoming_tab = ttk.Frame(self.relationship_notebook, padding=6)
         outgoing_tab = ttk.Frame(self.relationship_notebook, padding=6)
-
-        self.relationship_notebook.add(details_tab, text="Node Details")
         self.relationship_notebook.add(incoming_tab, text="Incoming Relationships (0)")
         self.relationship_notebook.add(outgoing_tab, text="Outgoing Relationships (0)")
 
-        details_scrollbar = ttk.Scrollbar(details_tab, orient=tk.VERTICAL)
-        self.details_text = tk.Text(
-            details_tab,
-            height=12,
-            wrap=tk.WORD,
-            yscrollcommand=details_scrollbar.set,
-        )
-        details_scrollbar.configure(command=self.details_text.yview)
-        self.details_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        details_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.details_text.configure(state=tk.DISABLED)
-
         self.incoming_tree = self._build_relationship_tree(incoming_tab)
         self.outgoing_tree = self._build_relationship_tree(outgoing_tab)
+        self.incoming_tree.bind(
+            "<<TreeviewSelect>>",
+            lambda _event: self._follow_relationship(self.incoming_tree, incoming=True),
+        )
+        self.outgoing_tree.bind(
+            "<<TreeviewSelect>>",
+            lambda _event: self._follow_relationship(self.outgoing_tree, incoming=False),
+        )
+
+        details_frame = ttk.LabelFrame(relationship_pane, text="Current Node", padding=12)
+        relationship_pane.add(details_frame, minsize=320, width=390, stretch="never")
+        self._build_current_node_panel(details_frame)
 
     def _build_relationship_tree(self, parent: ttk.Frame) -> ttk.Treeview:
         columns = ("Relation", "Type", "Node", "File", "Line", "Evidence")
@@ -258,28 +281,64 @@ class ARELocalApp:
             columns=columns,
             show="headings",
             selectmode="browse",
-            height=10,
+            height=12,
         )
         for name in columns:
             tree.heading(name, text=name)
 
         tree.column("Relation", width=190, anchor=tk.W)
         tree.column("Type", width=150, anchor=tk.W)
-        tree.column("Node", width=350, anchor=tk.W)
-        tree.column("File", width=390, anchor=tk.W)
+        tree.column("Node", width=330, anchor=tk.W)
+        tree.column("File", width=370, anchor=tk.W)
         tree.column("Line", width=65, anchor=tk.E)
-        tree.column("Evidence", width=280, anchor=tk.W)
+        tree.column("Evidence", width=260, anchor=tk.W)
 
         y_scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
         x_scrollbar = ttk.Scrollbar(parent, orient=tk.HORIZONTAL, command=tree.xview)
         tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
-
         tree.grid(row=0, column=0, sticky="nsew")
         y_scrollbar.grid(row=0, column=1, sticky="ns")
         x_scrollbar.grid(row=1, column=0, sticky="ew")
         parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
         return tree
+
+    def _build_current_node_panel(self, parent: ttk.Frame) -> None:
+        ttk.Label(parent, textvariable=self.current_name_var, font=("Segoe UI", 13, "bold"), wraplength=340).pack(
+            anchor=tk.W, fill=tk.X
+        )
+        ttk.Label(parent, textvariable=self.current_type_var, font=("Segoe UI", 10, "bold")).pack(
+            anchor=tk.W, pady=(4, 12)
+        )
+
+        ttk.Label(parent, text="File", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W)
+        ttk.Label(parent, textvariable=self.current_file_var, wraplength=340).pack(
+            anchor=tk.W, fill=tk.X, pady=(1, 8)
+        )
+
+        ttk.Label(parent, text="Line", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W)
+        ttk.Label(parent, textvariable=self.current_line_var).pack(anchor=tk.W, pady=(1, 8))
+
+        ttk.Label(parent, textvariable=self.current_counts_var).pack(anchor=tk.W, pady=(0, 10))
+
+        ttk.Label(parent, text="Details / Metadata", font=("Segoe UI", 9, "bold")).pack(anchor=tk.W)
+        metadata_frame = ttk.Frame(parent)
+        metadata_frame.pack(fill=tk.BOTH, expand=True, pady=(4, 10))
+        metadata_scrollbar = ttk.Scrollbar(metadata_frame, orient=tk.VERTICAL)
+        self.current_metadata_text = tk.Text(
+            metadata_frame,
+            height=14,
+            width=42,
+            wrap=tk.WORD,
+            yscrollcommand=metadata_scrollbar.set,
+        )
+        metadata_scrollbar.configure(command=self.current_metadata_text.yview)
+        self.current_metadata_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        metadata_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.current_metadata_text.configure(state=tk.DISABLED)
+
+        # Intentionally visual-only for now; no edit behavior is implemented.
+        ttk.Button(parent, text="Edit File").pack(anchor=tk.W)
 
     def _build_issues_tab(self) -> None:
         ttk.Label(
@@ -291,11 +350,7 @@ class ARELocalApp:
         ).pack(anchor=tk.W, pady=(0, 8))
 
         columns = ("Parser", "File", "Reason")
-        self.issues_tree = ttk.Treeview(
-            self.issues_tab,
-            columns=columns,
-            show="headings",
-        )
+        self.issues_tree = ttk.Treeview(self.issues_tab, columns=columns, show="headings")
         for name in columns:
             self.issues_tree.heading(name, text=name)
         self.issues_tree.column("Parser", width=170, anchor=tk.W)
@@ -322,7 +377,6 @@ class ARELocalApp:
         if not repository_path.exists() or not repository_path.is_dir():
             messagebox.showerror("ARE", f"Repository folder does not exist:\n{repository_path}")
             return
-
         if self.scan_thread is not None and self.scan_thread.is_alive():
             return
 
@@ -330,7 +384,6 @@ class ARELocalApp:
         self.status_var.set("1% — Starting repository scan...")
         self.scan_button.configure(state=tk.DISABLED)
         self._clear_scan_views()
-
         self.scan_thread = threading.Thread(
             target=self._scan_worker,
             args=(repository_path,),
@@ -347,7 +400,6 @@ class ARELocalApp:
         except Exception as exc:  # noqa: BLE001 - UI must surface scan failures cleanly
             self.root.after(0, self._scan_failed, str(exc))
             return
-
         self.root.after(0, self._scan_finished, context)
 
     def _update_progress(self, percent: int, message: str) -> None:
@@ -370,7 +422,6 @@ class ARELocalApp:
             )
         else:
             self.status_var.set("100% — Repository scan complete.")
-
         self._populate_summary()
         self._populate_files()
         self._populate_issues()
@@ -378,18 +429,10 @@ class ARELocalApp:
     def _clear_scan_views(self) -> None:
         self.context = None
         self.search_results = tuple()
-        for tree in (
-            self.summary_tree,
-            self.files_tree,
-            self.search_tree,
-            self.issues_tree,
-            self.incoming_tree,
-            self.outgoing_tree,
-        ):
+        for tree in (self.summary_tree, self.files_tree, self.search_tree, self.issues_tree):
             for item in tree.get_children():
                 tree.delete(item)
-        self._set_details("")
-        self._update_relationship_tab_titles(0, 0)
+        self._clear_current_node()
 
     def _populate_summary(self) -> None:
         assert self.context is not None
@@ -439,7 +482,6 @@ class ARELocalApp:
         if self.context is None:
             messagebox.showinfo("ARE", "Scan a repository first.")
             return
-
         query = self.search_var.get().strip()
         if not query:
             return
@@ -464,8 +506,7 @@ class ARELocalApp:
 
         for item in self.search_tree.get_children():
             self.search_tree.delete(item)
-
-        self._clear_selected_relationships()
+        self._clear_current_node()
 
         for index, result in enumerate(self.search_results):
             node = result.node
@@ -482,52 +523,80 @@ class ARELocalApp:
                     node.line or "",
                 ),
             )
-
         self.status_var.set(f"Search returned {len(self.search_results)} result(s).")
 
     def _show_selected_result(self, _event: object | None = None) -> None:
         result = self._selected_search_result()
         if result is None or self.context is None:
-            self._clear_selected_relationships()
             return
-
-        node = result.node
-        graph_details = self.service.node_details(self.context.graph, node.id)
-        parent_edges = tuple(graph_details.get("parent_edges", ()))
-        child_edges = tuple(graph_details.get("child_edges", ()))
-
-        lines = [
-            "SELECTED NODE",
-            "=============",
-            f"Type: {node.type.value}",
-            f"Name: {node.name}",
-            f"Score: {result.score:.1f}",
-            f"Matched text: {result.matched_text}",
-        ]
-        if node.file_path is not None:
-            lines.append(f"File: {self._relative_path(node.file_path)}")
-        if node.line is not None:
-            lines.append(f"Line: {node.line}")
-
-        lines.extend(
-            [
-                "",
-                "RELATIONSHIP SUMMARY",
-                "====================",
-                f"Incoming relationships: {len(parent_edges)}",
-                f"Outgoing relationships: {len(child_edges)}",
-            ]
+        self._navigate_to_node(
+            result.node.id,
+            add_history=self.current_node_id is not None,
+            score=result.score,
+            matched_text=result.matched_text,
         )
 
-        if node.metadata:
-            lines.extend(["", "METADATA", "========"])
-            for key, value in node.metadata.items():
-                lines.append(f"{key}: {value}")
+    def _navigate_to_node(
+        self,
+        node_id: str,
+        *,
+        add_history: bool = True,
+        score: float | None = None,
+        matched_text: str | None = None,
+    ) -> None:
+        if self.context is None:
+            return
+        node = self.context.graph.get_node(node_id)
+        if node is None:
+            return
 
-        self._set_details("\n".join(lines))
+        if add_history and self.current_node_id and self.current_node_id != node_id:
+            self.back_history.append(self.current_node_id)
+            self.forward_history.clear()
+
+        self.current_node_id = node_id
+        self.current_score = score
+        self.current_matched_text = matched_text
+        self._render_current_node(node)
+        self._update_history_buttons()
+
+    def _render_current_node(self, node: GraphNode) -> None:
+        if self.context is None:
+            return
+
+        details = self.service.node_details(self.context.graph, node.id)
+        parent_edges = tuple(details.get("parent_edges", ()))
+        child_edges = tuple(details.get("child_edges", ()))
+
+        self.current_name_var.set(node.name)
+        self.current_type_var.set(node.type.value)
+        self.current_file_var.set(self._relative_path(node.file_path) if node.file_path else "")
+        self.current_line_var.set(str(node.line or ""))
+        self.current_counts_var.set(
+            f"Incoming: {len(parent_edges)}   Outgoing: {len(child_edges)}"
+        )
+
+        info_lines: list[str] = []
+        if self.current_score is not None:
+            info_lines.append(f"Search score: {self.current_score:.1f}")
+        if self.current_matched_text:
+            info_lines.append(f"Matched text: {self.current_matched_text}")
+        if node.metadata:
+            if info_lines:
+                info_lines.append("")
+            for key, value in node.metadata.items():
+                info_lines.append(f"{key}: {value}")
+        if not info_lines:
+            info_lines.append("No additional metadata.")
+        self._set_current_metadata("\n".join(info_lines))
+
         self._populate_relationship_tree(self.incoming_tree, parent_edges, incoming=True)
         self._populate_relationship_tree(self.outgoing_tree, child_edges, incoming=False)
         self._update_relationship_tab_titles(len(parent_edges), len(child_edges))
+        self.status_var.set(
+            f"Current node: {node.type.value} — {node.name} | "
+            f"{len(parent_edges)} incoming / {len(child_edges)} outgoing"
+        )
 
     def _populate_relationship_tree(
         self,
@@ -542,32 +611,86 @@ class ARELocalApp:
         for item in tree.get_children():
             tree.delete(item)
 
-        graph = self.context.graph
+        target_map = self.incoming_targets if incoming else self.outgoing_targets
+        target_map.clear()
+
         for index, edge in enumerate(edges):
             connected_node_id = edge.source_id if incoming else edge.target_id
-            connected_node = graph.get_node(connected_node_id)
+            connected_node = self.context.graph.get_node(connected_node_id)
             if connected_node is None:
                 continue
 
-            file_name = (
-                self._relative_path(connected_node.file_path)
-                if connected_node.file_path is not None
-                else ""
-            )
-            evidence = self._edge_evidence(edge)
+            iid = f"{'in' if incoming else 'out'}-{index}"
+            target_map[iid] = connected_node.id
+            file_name = self._relative_path(connected_node.file_path) if connected_node.file_path else ""
             tree.insert(
                 "",
                 tk.END,
-                iid=f"relationship-{index}",
+                iid=iid,
                 values=(
                     edge.relation.value,
                     connected_node.type.value,
                     connected_node.name,
                     file_name,
                     connected_node.line or "",
-                    evidence,
+                    self._edge_evidence(edge),
                 ),
             )
+
+    def _follow_relationship(self, tree: ttk.Treeview, *, incoming: bool) -> None:
+        selected = tree.selection()
+        if not selected:
+            return
+        target_map = self.incoming_targets if incoming else self.outgoing_targets
+        node_id = target_map.get(selected[0])
+        if not node_id:
+            return
+        # Relationship navigation starts a fresh node context rather than carrying search score text.
+        self._navigate_to_node(node_id, add_history=True)
+
+    def _go_back(self) -> None:
+        if not self.back_history or self.current_node_id is None:
+            return
+        target = self.back_history.pop()
+        self.forward_history.append(self.current_node_id)
+        self._navigate_to_node(target, add_history=False)
+
+    def _go_forward(self) -> None:
+        if not self.forward_history or self.current_node_id is None:
+            return
+        target = self.forward_history.pop()
+        self.back_history.append(self.current_node_id)
+        self._navigate_to_node(target, add_history=False)
+
+    def _update_history_buttons(self) -> None:
+        self.back_button.configure(state=tk.NORMAL if self.back_history else tk.DISABLED)
+        self.forward_button.configure(state=tk.NORMAL if self.forward_history else tk.DISABLED)
+
+    def _update_relationship_tab_titles(self, incoming_count: int, outgoing_count: int) -> None:
+        self.relationship_notebook.tab(0, text=f"Incoming Relationships ({incoming_count})")
+        self.relationship_notebook.tab(1, text=f"Outgoing Relationships ({outgoing_count})")
+
+    def _clear_current_node(self) -> None:
+        self.current_node_id = None
+        self.current_score = None
+        self.current_matched_text = None
+        self.back_history.clear()
+        self.forward_history.clear()
+        self.incoming_targets.clear()
+        self.outgoing_targets.clear()
+
+        for tree in (self.incoming_tree, self.outgoing_tree):
+            for item in tree.get_children():
+                tree.delete(item)
+
+        self.current_name_var.set("No node selected")
+        self.current_type_var.set("")
+        self.current_file_var.set("")
+        self.current_line_var.set("")
+        self.current_counts_var.set("Incoming: 0   Outgoing: 0")
+        self._set_current_metadata("")
+        self._update_relationship_tab_titles(0, 0)
+        self._update_history_buttons()
 
     @staticmethod
     def _edge_evidence(edge: GraphEdge) -> str:
@@ -575,43 +698,36 @@ class ARELocalApp:
             return ""
         return "; ".join(f"{key}={value}" for key, value in edge.metadata.items())
 
-    def _update_relationship_tab_titles(self, incoming_count: int, outgoing_count: int) -> None:
-        self.relationship_notebook.tab(1, text=f"Incoming Relationships ({incoming_count})")
-        self.relationship_notebook.tab(2, text=f"Outgoing Relationships ({outgoing_count})")
-
-    def _clear_selected_relationships(self) -> None:
-        self._set_details("")
-        for tree in (self.incoming_tree, self.outgoing_tree):
-            for item in tree.get_children():
-                tree.delete(item)
-        self._update_relationship_tab_titles(0, 0)
-
-    def _open_selected_graph(self) -> None:
+    def _open_current_graph(self) -> None:
         if self.context is None:
             messagebox.showinfo("ARE", "Scan a repository first.")
             return
+        if self.current_node_id is None:
+            messagebox.showinfo("ARE", "Select a search result or relationship first.")
+            return
 
-        result = self._selected_search_result()
-        if result is None:
-            messagebox.showinfo("ARE", "Select a search result first.")
+        focus_node = self.context.graph.get_node(self.current_node_id)
+        if focus_node is None:
             return
 
         nodes, edges = relationship_neighborhood(
             self.context,
-            result.node.id,
+            self.current_node_id,
             max_depth=5,
             include_examples=False,
         )
         if not nodes:
-            messagebox.showinfo("ARE", "No relationship graph is available for this result.")
+            messagebox.showinfo("ARE", "No relationship graph is available for this node.")
             return
 
+        # The HTML graph treats the first node as its initial selected/focus card.
+        ordered_nodes = (focus_node, *tuple(node for node in nodes if node.id != focus_node.id))
         graph_html = build_local_graph_html(
-            nodes,
+            ordered_nodes,
             edges,
-            title=f"ARE — {result.node.name}",
+            title=f"ARE — {focus_node.name}",
         )
-        safe_name = str(abs(hash(result.node.id)))
+        safe_name = str(abs(hash(focus_node.id)))
         output_path = Path(tempfile.gettempdir()) / f"are_relationship_{safe_name}.html"
         output_path.write_text(graph_html, encoding="utf-8")
         webbrowser.open(output_path.resolve().as_uri())
@@ -636,12 +752,12 @@ class ARELocalApp:
         except ValueError:
             return str(path)
 
-    def _set_details(self, value: str) -> None:
-        self.details_text.configure(state=tk.NORMAL)
-        self.details_text.delete("1.0", tk.END)
+    def _set_current_metadata(self, value: str) -> None:
+        self.current_metadata_text.configure(state=tk.NORMAL)
+        self.current_metadata_text.delete("1.0", tk.END)
         if value:
-            self.details_text.insert("1.0", value)
-        self.details_text.configure(state=tk.DISABLED)
+            self.current_metadata_text.insert("1.0", value)
+        self.current_metadata_text.configure(state=tk.DISABLED)
 
 
 def main() -> None:

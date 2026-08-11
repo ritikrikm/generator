@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from automation_repository_explorer.analyzers.step_matcher import StepDefinitionMatcher
@@ -17,6 +18,8 @@ from automation_repository_explorer.models.domain import (
 )
 from automation_repository_explorer.models.graph import GraphEdge, GraphNode, NodeType, RelationType
 from automation_repository_explorer.services.indexer import RepositoryIndex
+
+ProgressCallback = Callable[[int, str], None]
 
 
 class RepositoryGraphBuilder:
@@ -52,11 +55,18 @@ class RepositoryGraphBuilder:
     def __init__(self, step_matcher: StepDefinitionMatcher | None = None) -> None:
         self._step_matcher = step_matcher or StepDefinitionMatcher()
 
-    def build(self, index: RepositoryIndex) -> RepositoryGraph:
+    def build(
+        self,
+        index: RepositoryIndex,
+        progress_callback: ProgressCallback | None = None,
+    ) -> RepositoryGraph:
         graph = RepositoryGraph()
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]] = {}
         properties_by_key = {entry.key: entry for entry in index.properties}
         property_nodes: dict[str, GraphNode] = {}
+
+        if progress_callback:
+            progress_callback(85, "Building graph: indexing repository files...")
 
         for repository_file in index.files:
             graph.add_node(
@@ -66,28 +76,64 @@ class RepositoryGraphBuilder:
                     name=repository_file.path.name,
                     file_path=repository_file.path,
                     line=1,
-                    metadata={"extension": repository_file.extension, "size_bytes": repository_file.size_bytes},
+                    metadata={
+                        "extension": repository_file.extension,
+                        "size_bytes": repository_file.size_bytes,
+                    },
                 )
             )
 
+        if progress_callback:
+            progress_callback(86, "Building graph: adding feature/scenario/step nodes...")
         for feature in index.features:
             self._add_feature(graph, feature)
 
+        if progress_callback:
+            progress_callback(87, "Building graph: adding Java classes and methods...")
         for java_class in index.java_classes:
             class_node = self._add_java_class(graph, java_class)
             for method in java_class.methods:
                 method_node = self._add_java_method(graph, java_class, method, class_node)
                 methods_by_name.setdefault(method.name, []).append((java_class, method, method_node))
 
+        if progress_callback:
+            progress_callback(88, "Building graph: adding properties and locators...")
         for entry in index.properties:
             property_node = self._add_property(graph, entry)
             property_nodes[entry.key] = property_node
             self._add_xpath_if_applicable(graph, entry, property_node)
 
-        self._link_steps_to_step_definitions(graph, index, methods_by_name)
-        self._link_method_calls(graph, index.java_classes, methods_by_name)
-        self._link_methods_to_properties(graph, index.java_classes, properties_by_key, property_nodes)
+        self._link_steps_to_step_definitions(
+            graph,
+            index,
+            methods_by_name,
+            progress_callback=progress_callback,
+        )
+        self._link_method_calls(
+            graph,
+            index.java_classes,
+            methods_by_name,
+            progress_callback=progress_callback,
+        )
+
+        if progress_callback:
+            progress_callback(93, "Building graph: linking Java methods to property keys...")
+        self._link_methods_to_properties(
+            graph,
+            index.java_classes,
+            properties_by_key,
+            property_nodes,
+        )
+
+        if progress_callback:
+            progress_callback(94, "Building graph: linking Scenario Outline examples...")
         self._link_examples(graph, index.features, property_nodes)
+
+        if progress_callback:
+            progress_callback(
+                95,
+                f"Relationship graph built: {len(graph.nodes)} nodes, {len(graph.edges)} edges.",
+            )
 
         return graph
 
@@ -153,7 +199,9 @@ class RepositoryGraphBuilder:
                 metadata={"imports": java_class.imports, "package": java_class.package},
             )
         )
-        graph.add_edge(GraphEdge(self._file_id(java_class.location.file_path), node.id, RelationType.DECLARES))
+        graph.add_edge(
+            GraphEdge(self._file_id(java_class.location.file_path), node.id, RelationType.DECLARES)
+        )
         return node
 
     def _add_java_method(
@@ -217,7 +265,9 @@ class RepositoryGraphBuilder:
                 metadata={"value": entry.value},
             )
         )
-        graph.add_edge(GraphEdge(self._file_id(entry.location.file_path), node.id, RelationType.DECLARES))
+        graph.add_edge(
+            GraphEdge(self._file_id(entry.location.file_path), node.id, RelationType.DECLARES)
+        )
         return node
 
     def _add_xpath_if_applicable(
@@ -244,6 +294,7 @@ class RepositoryGraphBuilder:
         graph: RepositoryGraph,
         index: RepositoryIndex,
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]],
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         step_definition_methods = [
             (java_class, method, node)
@@ -251,6 +302,21 @@ class RepositoryGraphBuilder:
             for java_class, method, node in methods
             if method.step_definition is not None
         ]
+        total_steps = sum(
+            len(scenario.steps)
+            for feature in index.features
+            for scenario in feature.scenarios
+        )
+        processed_steps = 0
+        last_percent = -1
+
+        if progress_callback:
+            progress_callback(
+                89,
+                f"Matching {total_steps} Cucumber steps to "
+                f"{len(step_definition_methods)} step definitions...",
+            )
+
         for feature in index.features:
             for scenario in feature.scenarios:
                 for step in scenario.steps:
@@ -258,21 +324,50 @@ class RepositoryGraphBuilder:
                     for _java_class, method, method_node in step_definition_methods:
                         if not self._step_matcher.matches(step, method):
                             continue
-                        step_def_node_id = f"stepdef:{method.location.file_path}:{method.location.line}:{method.name}"
-                        graph.add_edge(
-                            GraphEdge(step_node_id, step_def_node_id, RelationType.MATCHES_STEP_DEFINITION)
+                        step_def_node_id = (
+                            f"stepdef:{method.location.file_path}:"
+                            f"{method.location.line}:{method.name}"
                         )
                         graph.add_edge(
-                            GraphEdge(step_def_node_id, method_node.id, RelationType.IMPLEMENTED_BY)
+                            GraphEdge(
+                                step_node_id,
+                                step_def_node_id,
+                                RelationType.MATCHES_STEP_DEFINITION,
+                            )
                         )
+                        graph.add_edge(
+                            GraphEdge(
+                                step_def_node_id,
+                                method_node.id,
+                                RelationType.IMPLEMENTED_BY,
+                            )
+                        )
+
+                    processed_steps += 1
+                    if progress_callback and total_steps:
+                        percent = 89 + int((processed_steps / total_steps) * 2)
+                        if percent != last_percent or processed_steps == total_steps:
+                            progress_callback(
+                                percent,
+                                f"Matching Cucumber steps {processed_steps}/{total_steps}...",
+                            )
+                            last_percent = percent
 
     def _link_method_calls(
         self,
         graph: RepositoryGraph,
         java_classes: tuple[JavaClass, ...],
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]],
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         """Link calls only when static evidence identifies a deterministic target."""
+
+        total_methods = sum(len(java_class.methods) for java_class in java_classes)
+        processed_methods = 0
+        last_percent = -1
+
+        if progress_callback:
+            progress_callback(91, f"Resolving Java calls across {total_methods} methods...")
 
         for java_class in java_classes:
             for method in java_class.methods:
@@ -299,6 +394,16 @@ class RepositoryGraphBuilder:
                             metadata={"call": call_expression, "resolution": "deterministic"},
                         )
                     )
+
+                processed_methods += 1
+                if progress_callback and total_methods:
+                    percent = 91 + int((processed_methods / total_methods) * 2)
+                    if percent != last_percent or processed_methods == total_methods:
+                        progress_callback(
+                            percent,
+                            f"Resolving Java calls {processed_methods}/{total_methods}...",
+                        )
+                        last_percent = percent
 
     @classmethod
     def _resolve_call_candidates(
@@ -361,7 +466,9 @@ class RepositoryGraphBuilder:
                     if entry is None:
                         continue
                     property_node = property_nodes[entry.key]
-                    graph.add_edge(GraphEdge(method_node_id, property_node.id, RelationType.USES_PROPERTY))
+                    graph.add_edge(
+                        GraphEdge(method_node_id, property_node.id, RelationType.USES_PROPERTY)
+                    )
 
     def _link_examples(
         self,
@@ -394,7 +501,11 @@ class RepositoryGraphBuilder:
                             )
                             scenario_id = self._scenario_id(feature, scenario)
                             graph.add_edge(
-                                GraphEdge(scenario_id, example_node.id, RelationType.HAS_EXAMPLE_VALUE)
+                                GraphEdge(
+                                    scenario_id,
+                                    example_node.id,
+                                    RelationType.HAS_EXAMPLE_VALUE,
+                                )
                             )
                             if column in placeholder_names:
                                 for step in scenario.steps:
@@ -421,7 +532,11 @@ class RepositoryGraphBuilder:
     @staticmethod
     def _looks_like_xpath(value: str) -> bool:
         stripped = value.strip()
-        return stripped.startswith("//") or stripped.startswith("(//") or "xpath=" in stripped.lower()
+        return (
+            stripped.startswith("//")
+            or stripped.startswith("(//")
+            or "xpath=" in stripped.lower()
+        )
 
     @classmethod
     def _class_node_type(cls, java_class: JavaClass) -> NodeType:
@@ -491,4 +606,7 @@ class RepositoryGraphBuilder:
 
     @staticmethod
     def _method_id(java_class: JavaClass, method: JavaMethod) -> str:
-        return f"method:{java_class.qualified_name}.{method.name}:{method.location.file_path}:{method.location.line}"
+        return (
+            f"method:{java_class.qualified_name}.{method.name}:"
+            f"{method.location.file_path}:{method.location.line}"
+        )

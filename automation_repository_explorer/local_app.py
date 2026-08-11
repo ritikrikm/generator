@@ -22,7 +22,7 @@ except ImportError as exc:  # pragma: no cover - depends on local Python install
     ) from exc
 
 from automation_repository_explorer.local_graph import build_local_graph_html
-from automation_repository_explorer.models.graph import NodeType
+from automation_repository_explorer.models.graph import GraphEdge, NodeType
 from automation_repository_explorer.search.search_engine import SearchMode, SearchResult
 from automation_repository_explorer.services.explorer_service import ExplorationContext, ExplorerService
 from automation_repository_explorer.ui.flow_graph import relationship_neighborhood
@@ -46,8 +46,8 @@ class ARELocalApp:
         self.node_type_var = tk.StringVar(value="All")
 
         self.root.title("Automation Repository Explorer")
-        self.root.geometry("1280x820")
-        self.root.minsize(980, 650)
+        self.root.geometry("1360x900")
+        self.root.minsize(1040, 700)
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -169,8 +169,17 @@ class ARELocalApp:
 
         ttk.Button(controls, text="Search", command=self._run_search).pack(side=tk.LEFT)
 
-        result_frame = ttk.Frame(self.search_tab)
-        result_frame.pack(fill=tk.BOTH, expand=True, pady=(10, 8))
+        content_pane = tk.PanedWindow(
+            self.search_tab,
+            orient=tk.VERTICAL,
+            sashwidth=6,
+            sashrelief=tk.RAISED,
+            borderwidth=0,
+        )
+        content_pane.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+
+        result_frame = ttk.LabelFrame(content_pane, text="Search Results", padding=6)
+        content_pane.add(result_frame, minsize=180, stretch="always")
 
         columns = ("Score", "Type", "Name", "File", "Line")
         self.search_tree = ttk.Treeview(
@@ -178,6 +187,7 @@ class ARELocalApp:
             columns=columns,
             show="headings",
             selectmode="browse",
+            height=10,
         )
         for name in columns:
             self.search_tree.heading(name, text=name)
@@ -197,8 +207,11 @@ class ARELocalApp:
         result_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.search_tree.bind("<<TreeviewSelect>>", self._show_selected_result)
 
-        action_frame = ttk.Frame(self.search_tab)
-        action_frame.pack(fill=tk.X)
+        relationship_frame = ttk.LabelFrame(content_pane, text="Selected Node & Relationships", padding=6)
+        content_pane.add(relationship_frame, minsize=300, stretch="always")
+
+        action_frame = ttk.Frame(relationship_frame)
+        action_frame.pack(fill=tk.X, pady=(0, 6))
         ttk.Button(
             action_frame,
             text="Open relationship graph",
@@ -206,12 +219,67 @@ class ARELocalApp:
         ).pack(side=tk.LEFT)
         ttk.Label(
             action_frame,
-            text="The relationship graph opens as a local HTML file in your browser. No server is started.",
+            text=(
+                "Immediate incoming/outgoing relationships are shown below. "
+                "Open graph shows the wider local relationship neighborhood."
+            ),
         ).pack(side=tk.LEFT, padx=(10, 0))
 
-        self.details_text = tk.Text(self.search_tab, height=9, wrap=tk.WORD)
-        self.details_text.pack(fill=tk.X, pady=(8, 0))
+        self.relationship_notebook = ttk.Notebook(relationship_frame)
+        self.relationship_notebook.pack(fill=tk.BOTH, expand=True)
+
+        details_tab = ttk.Frame(self.relationship_notebook, padding=6)
+        incoming_tab = ttk.Frame(self.relationship_notebook, padding=6)
+        outgoing_tab = ttk.Frame(self.relationship_notebook, padding=6)
+
+        self.relationship_notebook.add(details_tab, text="Node Details")
+        self.relationship_notebook.add(incoming_tab, text="Incoming Relationships (0)")
+        self.relationship_notebook.add(outgoing_tab, text="Outgoing Relationships (0)")
+
+        details_scrollbar = ttk.Scrollbar(details_tab, orient=tk.VERTICAL)
+        self.details_text = tk.Text(
+            details_tab,
+            height=12,
+            wrap=tk.WORD,
+            yscrollcommand=details_scrollbar.set,
+        )
+        details_scrollbar.configure(command=self.details_text.yview)
+        self.details_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        details_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.details_text.configure(state=tk.DISABLED)
+
+        self.incoming_tree = self._build_relationship_tree(incoming_tab)
+        self.outgoing_tree = self._build_relationship_tree(outgoing_tab)
+
+    def _build_relationship_tree(self, parent: ttk.Frame) -> ttk.Treeview:
+        columns = ("Relation", "Type", "Node", "File", "Line", "Evidence")
+        tree = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            height=10,
+        )
+        for name in columns:
+            tree.heading(name, text=name)
+
+        tree.column("Relation", width=190, anchor=tk.W)
+        tree.column("Type", width=150, anchor=tk.W)
+        tree.column("Node", width=350, anchor=tk.W)
+        tree.column("File", width=390, anchor=tk.W)
+        tree.column("Line", width=65, anchor=tk.E)
+        tree.column("Evidence", width=280, anchor=tk.W)
+
+        y_scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=tree.yview)
+        x_scrollbar = ttk.Scrollbar(parent, orient=tk.HORIZONTAL, command=tree.xview)
+        tree.configure(yscrollcommand=y_scrollbar.set, xscrollcommand=x_scrollbar.set)
+
+        tree.grid(row=0, column=0, sticky="nsew")
+        y_scrollbar.grid(row=0, column=1, sticky="ns")
+        x_scrollbar.grid(row=1, column=0, sticky="ew")
+        parent.rowconfigure(0, weight=1)
+        parent.columnconfigure(0, weight=1)
+        return tree
 
     def _build_issues_tab(self) -> None:
         ttk.Label(
@@ -310,10 +378,18 @@ class ARELocalApp:
     def _clear_scan_views(self) -> None:
         self.context = None
         self.search_results = tuple()
-        for tree in (self.summary_tree, self.files_tree, self.search_tree, self.issues_tree):
+        for tree in (
+            self.summary_tree,
+            self.files_tree,
+            self.search_tree,
+            self.issues_tree,
+            self.incoming_tree,
+            self.outgoing_tree,
+        ):
             for item in tree.get_children():
                 tree.delete(item)
         self._set_details("")
+        self._update_relationship_tab_titles(0, 0)
 
     def _populate_summary(self) -> None:
         assert self.context is not None
@@ -389,6 +465,8 @@ class ARELocalApp:
         for item in self.search_tree.get_children():
             self.search_tree.delete(item)
 
+        self._clear_selected_relationships()
+
         for index, result in enumerate(self.search_results):
             node = result.node
             file_name = self._relative_path(node.file_path) if node.file_path else ""
@@ -409,24 +487,104 @@ class ARELocalApp:
 
     def _show_selected_result(self, _event: object | None = None) -> None:
         result = self._selected_search_result()
-        if result is None:
-            self._set_details("")
+        if result is None or self.context is None:
+            self._clear_selected_relationships()
             return
 
         node = result.node
+        graph_details = self.service.node_details(self.context.graph, node.id)
+        parent_edges = tuple(graph_details.get("parent_edges", ()))
+        child_edges = tuple(graph_details.get("child_edges", ()))
+
         lines = [
+            "SELECTED NODE",
+            "=============",
             f"Type: {node.type.value}",
             f"Name: {node.name}",
             f"Score: {result.score:.1f}",
-            f"Matched: {result.matched_text}",
+            f"Matched text: {result.matched_text}",
         ]
         if node.file_path is not None:
             lines.append(f"File: {self._relative_path(node.file_path)}")
         if node.line is not None:
             lines.append(f"Line: {node.line}")
+
+        lines.extend(
+            [
+                "",
+                "RELATIONSHIP SUMMARY",
+                "====================",
+                f"Incoming relationships: {len(parent_edges)}",
+                f"Outgoing relationships: {len(child_edges)}",
+            ]
+        )
+
         if node.metadata:
-            lines.append(f"Metadata: {node.metadata}")
+            lines.extend(["", "METADATA", "========"])
+            for key, value in node.metadata.items():
+                lines.append(f"{key}: {value}")
+
         self._set_details("\n".join(lines))
+        self._populate_relationship_tree(self.incoming_tree, parent_edges, incoming=True)
+        self._populate_relationship_tree(self.outgoing_tree, child_edges, incoming=False)
+        self._update_relationship_tab_titles(len(parent_edges), len(child_edges))
+
+    def _populate_relationship_tree(
+        self,
+        tree: ttk.Treeview,
+        edges: tuple[GraphEdge, ...],
+        *,
+        incoming: bool,
+    ) -> None:
+        if self.context is None:
+            return
+
+        for item in tree.get_children():
+            tree.delete(item)
+
+        graph = self.context.graph
+        for index, edge in enumerate(edges):
+            connected_node_id = edge.source_id if incoming else edge.target_id
+            connected_node = graph.get_node(connected_node_id)
+            if connected_node is None:
+                continue
+
+            file_name = (
+                self._relative_path(connected_node.file_path)
+                if connected_node.file_path is not None
+                else ""
+            )
+            evidence = self._edge_evidence(edge)
+            tree.insert(
+                "",
+                tk.END,
+                iid=f"relationship-{index}",
+                values=(
+                    edge.relation.value,
+                    connected_node.type.value,
+                    connected_node.name,
+                    file_name,
+                    connected_node.line or "",
+                    evidence,
+                ),
+            )
+
+    @staticmethod
+    def _edge_evidence(edge: GraphEdge) -> str:
+        if not edge.metadata:
+            return ""
+        return "; ".join(f"{key}={value}" for key, value in edge.metadata.items())
+
+    def _update_relationship_tab_titles(self, incoming_count: int, outgoing_count: int) -> None:
+        self.relationship_notebook.tab(1, text=f"Incoming Relationships ({incoming_count})")
+        self.relationship_notebook.tab(2, text=f"Outgoing Relationships ({outgoing_count})")
+
+    def _clear_selected_relationships(self) -> None:
+        self._set_details("")
+        for tree in (self.incoming_tree, self.outgoing_tree):
+            for item in tree.get_children():
+                tree.delete(item)
+        self._update_relationship_tab_titles(0, 0)
 
     def _open_selected_graph(self) -> None:
         if self.context is None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 
 from automation_repository_explorer.models.domain import JavaMethod, Step
 
@@ -31,14 +32,24 @@ class StepDefinitionMatcher:
 
         if method.step_definition is None:
             return False
-        regex = self._pattern_to_regex(method.step_definition.pattern)
+        compiled = self._compiled_pattern(method.step_definition.pattern)
+        if compiled is None:
+            return False
+        return compiled.fullmatch(step.normalized_text) is not None
+
+    @classmethod
+    @lru_cache(maxsize=4096)
+    def _compiled_pattern(cls, pattern: str) -> re.Pattern[str] | None:
+        """Compile each distinct Cucumber pattern once per process."""
+
         try:
-            return re.fullmatch(regex, step.normalized_text) is not None
+            return re.compile(cls._pattern_to_regex(pattern))
         except re.error:
             # A malformed/custom Java regex should not break the whole repository scan.
-            return False
+            return None
 
-    def _pattern_to_regex(self, pattern: str) -> str:
+    @classmethod
+    def _pattern_to_regex(cls, pattern: str) -> str:
         clean = pattern.strip()
 
         # Cucumber also accepts regular-expression step definitions. Preserve them as regex
@@ -48,10 +59,10 @@ class StepDefinitionMatcher:
 
         parts: list[str] = []
         cursor = 0
-        for match in self._PARAMETER_RE.finditer(clean):
+        for match in cls._PARAMETER_RE.finditer(clean):
             parts.append(re.escape(clean[cursor : match.start()]))
             parameter_name = match.group("name").strip().lower()
-            parts.append(self._CUCUMBER_PARAMETER_PATTERNS.get(parameter_name, r".+?"))
+            parts.append(cls._CUCUMBER_PARAMETER_PATTERNS.get(parameter_name, r".+?"))
             cursor = match.end()
         parts.append(re.escape(clean[cursor:]))
         return "".join(parts)

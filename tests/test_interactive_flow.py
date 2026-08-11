@@ -34,7 +34,11 @@ class InteractiveFlowTests(unittest.TestCase):
 
     def test_relationship_neighborhood_can_render_local_interactive_html(self) -> None:
         context = ExplorerService().explore(Path("sample_repo"))
-        property_node = next(node for node in context.graph.nodes if node.type == NodeType.PROPERTY_KEY)
+        property_node = next(
+            node
+            for node in context.graph.nodes
+            if node.type == NodeType.PROPERTY_KEY
+        )
 
         nodes, edges = relationship_neighborhood(context, property_node.id)
         rendered = build_local_graph_html(nodes, edges)
@@ -42,7 +46,10 @@ class InteractiveFlowTests(unittest.TestCase):
         self.assertNotIn("https://", rendered)
         self.assertNotIn("unpkg.com", rendered)
         self.assertIn("<svg", rendered)
-        self.assertIn("Click a node", rendered)
+        self.assertIn("Full graph: OFF", rendered)
+        self.assertIn("function focusedLayout()", rendered)
+        self.assertIn("edge.source === currentNodeId", rendered)
+        self.assertIn("Edit File", rendered)
 
 
 if __name__ == "__main__":

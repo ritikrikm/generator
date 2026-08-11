@@ -15,15 +15,11 @@ class SourceLocation:
     column: int = 1
 
     def display(self) -> str:
-        """Return a human-readable location."""
-
         return f"{self.file_path}:{self.line}:{self.column}"
 
 
 @dataclass(frozen=True, slots=True)
 class RepositoryFile:
-    """Metadata for a supported file found during scanning."""
-
     path: Path
     extension: str
     size_bytes: int
@@ -31,8 +27,6 @@ class RepositoryFile:
 
 @dataclass(frozen=True, slots=True)
 class ExamplesTable:
-    """A Cucumber Examples table."""
-
     headers: tuple[str, ...]
     rows: tuple[dict[str, str], ...]
     tags: tuple[str, ...]
@@ -41,23 +35,17 @@ class ExamplesTable:
 
 @dataclass(frozen=True, slots=True)
 class Step:
-    """A Cucumber step."""
-
     keyword: str
     text: str
     location: SourceLocation
 
     @property
     def normalized_text(self) -> str:
-        """Return step text without its Gherkin keyword."""
-
         return self.text.strip()
 
 
 @dataclass(frozen=True, slots=True)
 class Scenario:
-    """A Cucumber Scenario or Scenario Outline."""
-
     name: str
     keyword: str
     tags: tuple[str, ...]
@@ -68,8 +56,6 @@ class Scenario:
 
 @dataclass(frozen=True, slots=True)
 class FeatureDocument:
-    """Parsed representation of a .feature file."""
-
     name: str
     location: SourceLocation
     tags: tuple[str, ...]
@@ -78,8 +64,6 @@ class FeatureDocument:
 
 @dataclass(frozen=True, slots=True)
 class StepDefinition:
-    """A Java Cucumber step definition annotation."""
-
     keyword: str
     pattern: str
     location: SourceLocation
@@ -87,7 +71,7 @@ class StepDefinition:
 
 @dataclass(frozen=True, slots=True)
 class JavaMethod:
-    """A Java method discovered from a class."""
+    """A Java method or constructor discovered by the configured Java analyzer."""
 
     name: str
     return_type: str
@@ -95,42 +79,39 @@ class JavaMethod:
     location: SourceLocation
     end_line: int
     body: str
-    # Backwards-compatible simple method names used by existing ARE code/tests.
     calls: tuple[str, ...]
     string_literals: tuple[str, ...]
     step_definition: StepDefinition | None = None
-    # Richer receiver-aware expressions, e.g. ``wf.click`` or ``LoginPage.open``.
-    # New resolvers use this when present; older consumers can keep using ``calls``.
     call_expressions: tuple[str, ...] = field(default_factory=tuple)
+    is_constructor: bool = False
+    binding_key: str | None = None
+    resolved_call_keys: tuple[str, ...] = field(default_factory=tuple)
+    unresolved_call_expressions: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def qualified_name(self) -> str:
-        """Return a readable method identifier."""
-
         return f"{self.location.file_path.name}::{self.name}"
 
 
 @dataclass(frozen=True, slots=True)
 class JavaClass:
-    """A Java class and its parsed methods."""
+    """A Java class/interface/enum/record and its analyzed members."""
 
     name: str
     package: str
     imports: tuple[str, ...]
     location: SourceLocation
     methods: tuple[JavaMethod, ...]
+    binding_key: str | None = None
+    analysis_backend: str = "legacy"
 
     @property
     def qualified_name(self) -> str:
-        """Return package-qualified class name when package exists."""
-
         return f"{self.package}.{self.name}" if self.package else self.name
 
 
 @dataclass(frozen=True, slots=True)
 class PropertyEntry:
-    """A key/value property entry."""
-
     key: str
     value: str
     location: SourceLocation

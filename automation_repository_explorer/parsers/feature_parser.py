@@ -1,10 +1,11 @@
-"""Parser for Gherkin feature files."""
+"""Official Cucumber Gherkin parser adapter for ARE."""
 
 from __future__ import annotations
 
-import logging
-import re
 from pathlib import Path
+from typing import Any
+
+from gherkin.parser import Parser as GherkinParser
 
 from automation_repository_explorer.core.exceptions import ParserError
 from automation_repository_explorer.core.text_reader import read_repository_text
@@ -17,290 +18,187 @@ from automation_repository_explorer.models.domain import (
 )
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
 
-LOGGER = logging.getLogger(__name__)
-
 
 class FeatureParser(RepositoryParser[FeatureDocument]):
-    """Static parser for Cucumber .feature files independent of folder structure."""
-
-    _FEATURE_RE = re.compile(r"^\s*Feature\s*:\s*(?P<name>.+?)\s*$", re.IGNORECASE)
-    _RULE_RE = re.compile(r"^\s*Rule\s*:\s*(?P<name>.+?)\s*$", re.IGNORECASE)
-    _BACKGROUND_RE = re.compile(r"^\s*Background\s*:\s*(?P<name>.*?)\s*$", re.IGNORECASE)
-    _SCENARIO_RE = re.compile(
-        r"^\s*(?P<keyword>Scenario(?:\s+Outline)?|Scenario Template)\s*:\s*(?P<name>.+?)\s*$",
-        re.IGNORECASE,
-    )
-    _STEP_RE = re.compile(r"^\s*(?P<keyword>Given|When|Then|And|But|\*)\s+(?P<text>.+?)\s*$")
-    _EXAMPLES_RE = re.compile(r"^\s*Examples\s*:\s*(?P<name>.*?)\s*$", re.IGNORECASE)
-    _LANGUAGE_RE = re.compile(r"^\s*#\s*language\s*:\s*(?P<language>[\w-]+)\s*$", re.IGNORECASE)
+    """Parse .feature files with Cucumber's official Gherkin parser."""
 
     @property
     def supported_extensions(self) -> frozenset[str]:
         return frozenset({".feature"})
 
     def parse(self, file_path: Path) -> ParseResult[FeatureDocument]:
-        LOGGER.debug("Parsing feature file %s", file_path)
         read_result = read_repository_text(file_path)
-        lines = read_result.text.splitlines()
+        try:
+            document = GherkinParser().parse(read_result.text)
+        except Exception as exc:
+            raise ParserError(f"Gherkin parse failed for {file_path}: {exc}") from exc
+
+        feature = document.get("feature")
+        if not feature:
+            raise ParserError(f"No Gherkin Feature was found in {file_path}")
+
         warnings: list[str] = []
         if read_result.used_fallback:
             warnings.append(
                 f"UTF-8 decoding failed; parsed successfully using {read_result.encoding}."
             )
 
-        feature_name = ""
-        feature_line = 1
-        feature_tags: list[str] = []
-        pending_tags: list[str] = []
+        feature_background: tuple[Step, ...] = tuple()
         scenarios: list[Scenario] = []
 
-        feature_background_steps: list[Step] = []
-        rule_background_steps: list[Step] = []
-        in_rule = False
-        background_target: list[Step] | None = None
-
-        current_name = ""
-        current_keyword = ""
-        current_line = 1
-        current_tags: tuple[str, ...] = ()
-        current_steps: list[Step] = []
-        current_examples: list[ExamplesTable] = []
-
-        def effective_background() -> list[Step]:
-            return [*feature_background_steps, *rule_background_steps]
-
-        def flush_scenario() -> None:
-            nonlocal current_name, current_keyword, current_line, current_tags
-            nonlocal current_steps, current_examples
-            if not current_name:
-                return
-            scenarios.append(
-                Scenario(
-                    name=current_name,
-                    keyword=current_keyword,
-                    tags=current_tags,
-                    location=SourceLocation(file_path, current_line),
-                    steps=tuple(current_steps),
-                    examples=tuple(current_examples),
+        for child in feature.get("children", []):
+            if "background" in child:
+                feature_background = self._steps(
+                    child["background"].get("steps", []), file_path
                 )
-            )
-            current_name = ""
-            current_keyword = ""
-            current_line = 1
-            current_tags = ()
-            current_steps = []
-            current_examples = []
-
-        index = 0
-        while index < len(lines):
-            raw = lines[index]
-            stripped = raw.strip()
-            line_number = index + 1
-
-            language_match = self._LANGUAGE_RE.match(raw)
-            if language_match:
-                language = language_match.group("language").lower()
-                if language not in {"en", "en-us", "en-gb"}:
-                    raise ParserError(
-                        f"Unsupported Gherkin language '{language}' in {file_path}. "
-                        "ARE currently parses English Cucumber keywords."
+            elif "scenario" in child:
+                scenarios.append(
+                    self._scenario(
+                        child["scenario"],
+                        file_path,
+                        prefix_steps=feature_background,
+                        warnings=warnings,
                     )
-                index += 1
-                continue
-
-            if not stripped or stripped.startswith("#"):
-                index += 1
-                continue
-
-            if stripped.startswith("@"):
-                pending_tags.extend(stripped.split())
-                index += 1
-                continue
-
-            feature_match = self._FEATURE_RE.match(raw)
-            if feature_match:
-                flush_scenario()
-                feature_name = feature_match.group("name").strip()
-                feature_line = line_number
-                feature_tags = pending_tags.copy()
-                pending_tags.clear()
-                index += 1
-                continue
-
-            rule_match = self._RULE_RE.match(raw)
-            if rule_match:
-                flush_scenario()
-                in_rule = True
-                rule_background_steps = []
-                background_target = None
-                pending_tags.clear()
-                index += 1
-                continue
-
-            if self._BACKGROUND_RE.match(raw):
-                flush_scenario()
-                background_target = rule_background_steps if in_rule else feature_background_steps
-                background_target.clear()
-                pending_tags.clear()
-                index += 1
-                continue
-
-            scenario_match = self._SCENARIO_RE.match(raw)
-            if scenario_match:
-                flush_scenario()
-                background_target = None
-                current_name = scenario_match.group("name").strip()
-                current_keyword = scenario_match.group("keyword").strip()
-                current_line = line_number
-                current_tags = tuple(pending_tags)
-                pending_tags.clear()
-                current_steps = effective_background()
-                index += 1
-                continue
-
-            step_match = self._STEP_RE.match(raw)
-            if step_match:
-                step = Step(
-                    keyword=step_match.group("keyword").title(),
-                    text=step_match.group("text").strip(),
-                    location=SourceLocation(file_path, line_number),
                 )
-                if current_name:
-                    current_steps.append(step)
-                elif background_target is not None:
-                    background_target.append(step)
-                index += 1
-                continue
-
-            if self._EXAMPLES_RE.match(raw) and current_name:
-                examples_tags = tuple(pending_tags)
-                pending_tags.clear()
-                table, next_index = self._parse_examples_table(
-                    lines=lines,
-                    file_path=file_path,
-                    start_index=index + 1,
-                    tags=examples_tags,
-                    warnings=warnings,
+            elif "rule" in child:
+                scenarios.extend(
+                    self._rule_scenarios(
+                        child["rule"],
+                        file_path,
+                        feature_background=feature_background,
+                        warnings=warnings,
+                    )
                 )
-                if table is not None:
-                    current_examples.append(table)
-                index = next_index
-                continue
 
-            index += 1
-
-        flush_scenario()
-
-        if not feature_name:
-            raise ParserError(f"No Feature declaration found in {file_path}")
-
+        feature_document = FeatureDocument(
+            name=str(feature.get("name", "")),
+            location=self._location(file_path, feature.get("location")),
+            tags=self._tags(feature.get("tags", [])),
+            scenarios=tuple(scenarios),
+        )
         return ParseResult(
             file_path=file_path,
-            items=(
-                FeatureDocument(
-                    name=feature_name,
-                    location=SourceLocation(file_path, feature_line),
-                    tags=tuple(feature_tags),
-                    scenarios=tuple(scenarios),
-                ),
-            ),
+            items=(feature_document,),
             warnings=tuple(warnings),
         )
 
-    def _parse_examples_table(
+    def _rule_scenarios(
         self,
-        lines: list[str],
+        rule: dict[str, Any],
         file_path: Path,
-        start_index: int,
-        tags: tuple[str, ...],
+        *,
+        feature_background: tuple[Step, ...],
         warnings: list[str],
-    ) -> tuple[ExamplesTable | None, int]:
-        index = start_index
+    ) -> tuple[Scenario, ...]:
+        rule_background: tuple[Step, ...] = tuple()
+        scenarios: list[Scenario] = []
 
-        while index < len(lines):
-            stripped = lines[index].strip()
-            if not stripped or stripped.startswith("#"):
-                index += 1
-                continue
-            if stripped.startswith("|"):
-                break
-            if (
-                stripped.startswith("@")
-                or self._SCENARIO_RE.match(lines[index])
-                or self._RULE_RE.match(lines[index])
-            ):
-                return None, index
-            index += 1
-
-        if index >= len(lines):
-            return None, index
-
-        header_line = index + 1
-        headers = tuple(self._split_table_row(lines[index]))
-        index += 1
-
-        rows: list[dict[str, str]] = []
-        while index < len(lines):
-            stripped = lines[index].strip()
-            if not stripped:
-                index += 1
-                continue
-            if not stripped.startswith("|"):
-                break
-
-            values = self._split_table_row(lines[index])
-            if len(values) != len(headers):
-                warnings.append(
-                    f"Examples row {index + 1} has {len(values)} values but "
-                    f"{len(headers)} headers; row skipped and remaining file continued."
+        for child in rule.get("children", []):
+            if "background" in child:
+                rule_background = self._steps(
+                    child["background"].get("steps", []), file_path
                 )
-                index += 1
+            elif "scenario" in child:
+                scenarios.append(
+                    self._scenario(
+                        child["scenario"],
+                        file_path,
+                        prefix_steps=feature_background + rule_background,
+                        warnings=warnings,
+                    )
+                )
+        return tuple(scenarios)
+
+    def _scenario(
+        self,
+        scenario: dict[str, Any],
+        file_path: Path,
+        *,
+        prefix_steps: tuple[Step, ...],
+        warnings: list[str],
+    ) -> Scenario:
+        examples = tuple(
+            table
+            for example in scenario.get("examples", [])
+            if (
+                table := self._examples_table(
+                    example,
+                    file_path,
+                    warnings=warnings,
+                )
+            )
+            is not None
+        )
+        return Scenario(
+            name=str(scenario.get("name", "")),
+            keyword=str(scenario.get("keyword", "Scenario")).strip(),
+            tags=self._tags(scenario.get("tags", [])),
+            location=self._location(file_path, scenario.get("location")),
+            steps=prefix_steps + self._steps(scenario.get("steps", []), file_path),
+            examples=examples,
+        )
+
+    def _examples_table(
+        self,
+        example: dict[str, Any],
+        file_path: Path,
+        *,
+        warnings: list[str],
+    ) -> ExamplesTable | None:
+        header = example.get("tableHeader")
+        if not header:
+            return None
+
+        headers = tuple(str(cell.get("value", "")) for cell in header.get("cells", []))
+        rows: list[dict[str, str]] = []
+        for row in example.get("tableBody", []):
+            values = tuple(str(cell.get("value", "")) for cell in row.get("cells", []))
+            if len(values) != len(headers):
+                line = int(row.get("location", {}).get("line", 1))
+                warnings.append(
+                    f"Examples row {line} has {len(values)} values but {len(headers)} "
+                    "headers; row skipped."
+                )
                 continue
-
             rows.append(dict(zip(headers, values, strict=True)))
-            index += 1
 
-        return (
-            ExamplesTable(
-                headers=headers,
-                rows=tuple(rows),
-                tags=tags,
-                location=SourceLocation(file_path, header_line),
-            ),
-            index,
+        return ExamplesTable(
+            headers=headers,
+            rows=tuple(rows),
+            tags=self._tags(example.get("tags", [])),
+            location=self._location(file_path, example.get("location")),
+        )
+
+    def _steps(
+        self,
+        steps: list[dict[str, Any]],
+        file_path: Path,
+    ) -> tuple[Step, ...]:
+        return tuple(
+            Step(
+                keyword=str(step.get("keyword", "")).strip(),
+                text=str(step.get("text", "")).strip(),
+                location=self._location(file_path, step.get("location")),
+            )
+            for step in steps
         )
 
     @staticmethod
-    def _split_table_row(row: str) -> list[str]:
-        r"""Split a Gherkin table row while preserving escaped pipes (\|)."""
+    def _tags(tags: list[dict[str, Any]]) -> tuple[str, ...]:
+        return tuple(
+            str(tag.get("name", "")).strip()
+            for tag in tags
+            if tag.get("name")
+        )
 
-        text = row.strip()
-        if text.startswith("|"):
-            text = text[1:]
-        if text.endswith("|") and not text.endswith("\\|"):
-            text = text[:-1]
-
-        cells: list[str] = []
-        current: list[str] = []
-        escaped = False
-        for char in text:
-            if escaped:
-                if char == "n":
-                    current.append("\n")
-                else:
-                    current.append(char)
-                escaped = False
-                continue
-            if char == "\\":
-                escaped = True
-                continue
-            if char == "|":
-                cells.append("".join(current).strip())
-                current = []
-                continue
-            current.append(char)
-
-        if escaped:
-            current.append("\\")
-        cells.append("".join(current).strip())
-        return cells
+    @staticmethod
+    def _location(
+        file_path: Path,
+        location: dict[str, Any] | None,
+    ) -> SourceLocation:
+        location = location or {}
+        return SourceLocation(
+            file_path=file_path,
+            line=int(location.get("line", 1)),
+            column=int(location.get("column", 1)),
+        )

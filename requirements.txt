@@ -1,2 +1,5 @@
-# ARE local desktop runtime uses only the Python standard library.
-# rapidfuzz is optional; search falls back to difflib when it is not installed.
+gherkin-official>=42.0.0,<43
+cucumber-expressions>=19,<20
+javaproperties>=0.8.2,<1
+ruamel.yaml>=0.19.1,<0.20
+lxml>=6.1.1,<7

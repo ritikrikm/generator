@@ -9,7 +9,14 @@ if not exist ".venv\Scripts\python.exe" (
 
 call ".venv\Scripts\activate.bat"
 
-REM No Streamlit, no local server, and no runtime pip install is required.
+python -c "import gherkin, cucumber_expressions, javaproperties, ruamel.yaml, lxml" >nul 2>&1
+if errorlevel 1 (
+    echo Installing ARE parser dependencies...
+    python -m pip install -r requirements.txt
+    if errorlevel 1 exit /b 1
+)
+
+REM Local Tkinter UI only. Eclipse JDT bridge builds locally with Maven on first Java scan.
 python -m automation_repository_explorer.local_app
 
 endlocal

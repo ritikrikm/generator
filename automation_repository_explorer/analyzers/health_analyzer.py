@@ -11,24 +11,18 @@ from automation_repository_explorer.models.graph import GraphNode, NodeType, Rel
 
 
 class HealthSeverity(StrEnum):
-    """How urgently a finding should be reviewed."""
-
     HIGH = "High"
     MEDIUM = "Medium"
     REVIEW = "Review"
 
 
 class HealthConfidence(StrEnum):
-    """Confidence in the static-analysis conclusion."""
-
     HIGH = "High"
     MEDIUM = "Medium"
 
 
 @dataclass(frozen=True, slots=True)
 class HealthCheckDefinition:
-    """Reusable definition shared by analysis and presentation."""
-
     check_id: str
     check_name: str
     severity: HealthSeverity
@@ -38,8 +32,6 @@ class HealthCheckDefinition:
 
 @dataclass(frozen=True, slots=True)
 class HealthFinding:
-    """One evidence-backed repository-health finding."""
-
     check_id: str
     check_name: str
     severity: HealthSeverity
@@ -51,8 +43,6 @@ class HealthFinding:
 
 @dataclass(frozen=True, slots=True)
 class RepositoryHealthReport:
-    """Complete health-analysis result for one repository graph."""
-
     findings: tuple[HealthFinding, ...] = tuple()
 
     @property
@@ -72,8 +62,18 @@ _UNMATCHED_STEP = HealthCheckDefinition(
     severity=HealthSeverity.HIGH,
     confidence=HealthConfidence.HIGH,
     explanation=(
-        "A parsed Gherkin step has no resolved matching Step Definition. "
-        "The scenario may fail because ARE cannot find an implementation mapping."
+        "Cucumber's official expression matcher evaluated the discovered Step Definitions "
+        "and no implementation matched this Gherkin step."
+    ),
+)
+_UNRESOLVED_STEP_MATCH = HealthCheckDefinition(
+    check_id="unresolved_step_match",
+    check_name="Gherkin Step Matching Unresolved",
+    severity=HealthSeverity.REVIEW,
+    confidence=HealthConfidence.MEDIUM,
+    explanation=(
+        "ARE could not fully evaluate at least one candidate Step Definition expression. "
+        "This is not treated as an unmatched High-confidence defect."
     ),
 )
 _AMBIGUOUS_STEP = HealthCheckDefinition(
@@ -82,8 +82,8 @@ _AMBIGUOUS_STEP = HealthCheckDefinition(
     severity=HealthSeverity.HIGH,
     confidence=HealthConfidence.HIGH,
     explanation=(
-        "A parsed Gherkin step resolves to more than one Step Definition. "
-        "The competing mappings should be reviewed."
+        "The official Cucumber matcher resolves this Gherkin step to more than one "
+        "Step Definition. The competing mappings should be reviewed."
     ),
 )
 _ORPHAN_STEP_DEFINITION = HealthCheckDefinition(
@@ -93,7 +93,7 @@ _ORPHAN_STEP_DEFINITION = HealthCheckDefinition(
     confidence=HealthConfidence.MEDIUM,
     explanation=(
         "No parsed Gherkin step currently maps to this Step Definition. "
-        "It may be obsolete, but runtime or dynamic usage should be checked before cleanup."
+        "Runtime or custom parameter behavior should still be checked before cleanup."
     ),
 )
 _UNREFERENCED_PROPERTY = HealthCheckDefinition(
@@ -112,17 +112,15 @@ _METHOD_WITHOUT_CALLER = HealthCheckDefinition(
     severity=HealthSeverity.REVIEW,
     confidence=HealthConfidence.MEDIUM,
     explanation=(
-        "No static caller or Step Definition implementation relationship was resolved. "
-        "Hooks, inheritance, reflection, or external callers may still use the method."
+        "No Eclipse JDT-resolved caller or Step Definition implementation relationship "
+        "was found. Reflection, hooks, framework callbacks, or external callers may still use it."
     ),
 )
 
 
 class RepositoryHealthAnalyzer:
-    """Run deterministic, conservative health checks over a repository graph."""
+    """Run conservative checks and avoid certainty when analysis is unresolved."""
 
-    # This rule is intentionally limited to method-level nodes. Page Object nodes represent
-    # classes/components and require class-usage evidence, not CALLS/IMPLEMENTED_BY evidence.
     _METHOD_TYPES = {
         NodeType.JAVA_METHOD,
         NodeType.WRAPPER_METHOD,
@@ -169,6 +167,20 @@ class RepositoryHealthAnalyzer:
             if edge.relation == RelationType.MATCHES_STEP_DEFINITION
         )
         if not matches:
+            if node.metadata.get("step_match_status") == "unresolved":
+                reason = str(
+                    node.metadata.get(
+                        "step_match_reason",
+                        "At least one candidate expression could not be evaluated.",
+                    )
+                )
+                return (
+                    _finding(
+                        _UNRESOLVED_STEP_MATCH,
+                        node.id,
+                        f"Step matching was unresolved: {reason}",
+                    ),
+                )
             return (
                 _finding(
                     _UNMATCHED_STEP,
@@ -225,16 +237,16 @@ class RepositoryHealthAnalyzer:
         graph: RepositoryGraph,
         node: GraphNode,
     ) -> HealthFinding | None:
+        if bool(node.metadata.get("is_constructor")):
+            return None
+
         incoming_relations = {edge.relation for edge in graph.parent_edges(node.id)}
-        if (
-            RelationType.CALLS in incoming_relations
-            or RelationType.IMPLEMENTED_BY in incoming_relations
-        ):
+        if RelationType.CALLS in incoming_relations or RelationType.IMPLEMENTED_BY in incoming_relations:
             return None
         return _finding(
             _METHOD_WITHOUT_CALLER,
             node.id,
-            "No static caller or Step Definition implementation relationship was resolved.",
+            "No statically resolved caller or Step Definition implementation was found.",
         )
 
     @staticmethod
@@ -242,11 +254,7 @@ class RepositoryHealthAnalyzer:
         node = graph.get_node(node_id)
         if node is None:
             return ("", 0, node_id)
-        return (
-            str(node.file_path or ""),
-            int(node.line or 0),
-            node.name,
-        )
+        return (str(node.file_path or ""), int(node.line or 0), node.name)
 
 
 def _finding(

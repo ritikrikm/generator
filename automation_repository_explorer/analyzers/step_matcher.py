@@ -1,136 +1,117 @@
-"""Cucumber step-to-step-definition matcher."""
+"""Cucumber step matching backed by the official cucumber-expressions package."""
 
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
+from enum import StrEnum
 from functools import lru_cache
+from typing import Any
+
+from cucumber_expressions.expression import CucumberExpression
+from cucumber_expressions.parameter_type_registry import ParameterTypeRegistry
+from cucumber_expressions.regular_expression import RegularExpression
 
 from automation_repository_explorer.models.domain import JavaMethod, Step
 
 
+class StepMatchStatus(StrEnum):
+    MATCH = "match"
+    NO_MATCH = "no_match"
+    UNRESOLVED = "unresolved"
+
+
+@dataclass(frozen=True, slots=True)
+class StepMatchResult:
+    status: StepMatchStatus
+    reason: str = ""
+
+
 class StepDefinitionMatcher:
-    """Matches feature steps to Java Cucumber step definitions.
+    """Match Cucumber steps using Cucumber's own expression implementation."""
 
-    Final matching always uses the compiled Cucumber expression/regular expression. The
-    lightweight anchor helpers are only an optimization used to narrow large candidate sets;
-    patterns that cannot be narrowed safely are deliberately returned without an anchor so
-    callers keep them in a fallback bucket.
-    """
-
-    _CUCUMBER_PARAMETER_PATTERNS = {
-        "string": r'(?:(?:"[^"\\]*(?:\\.[^"\\]*)*")|(?:\'[^\'\\]*(?:\\.[^\'\\]*)*\'))',
-        "int": r"[-+]?\d+",
-        "float": r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)",
-        "double": r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)",
-        "bigdecimal": r"[-+]?(?:\d+(?:\.\d+)?|\.\d+)",
-        "biginteger": r"[-+]?\d+",
-        "byte": r"[-+]?\d+",
-        "short": r"[-+]?\d+",
-        "long": r"[-+]?\d+",
-        "word": r"[^\s]+",
-        "boolean": r"(?:true|false)",
-        "": r".+?",
-    }
-    _PARAMETER_RE = re.compile(r"\{(?P<name>[^{}]*)\}")
+    _PARAMETER_RE = re.compile(r"\{[^{}]*\}")
     _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
     _MIN_ANCHOR_LENGTH = 3
-    _REGEX_META = frozenset("\\.*+?()[]{}|$")
 
     def matches(self, step: Step, method: JavaMethod) -> bool:
-        """Return True if a Java method's Cucumber annotation matches a step."""
-
-        return self.matches_text(step.normalized_text, method)
+        return (
+            self.match_result_text(step.normalized_text, method).status
+            == StepMatchStatus.MATCH
+        )
 
     def matches_text(self, step_text: str, method: JavaMethod) -> bool:
-        """Match already-normalized step text without constructing another Step object."""
+        return self.match_result_text(step_text, method).status == StepMatchStatus.MATCH
 
+    def match_result_text(
+        self,
+        step_text: str,
+        method: JavaMethod,
+    ) -> StepMatchResult:
         if method.step_definition is None:
-            return False
-        return self._matches_pattern_text(method.step_definition.pattern, step_text)
+            return StepMatchResult(StepMatchStatus.NO_MATCH)
+        return self._match_pattern(method.step_definition.pattern, step_text)
 
     @classmethod
     @lru_cache(maxsize=262_144)
-    def _matches_pattern_text(cls, pattern: str, step_text: str) -> bool:
-        """Cache repeated pattern/text checks across large repositories."""
-
-        compiled = cls._compiled_pattern(pattern)
-        if compiled is None:
-            return False
-        return compiled.fullmatch(step_text) is not None
+    def _match_pattern(cls, pattern: str, step_text: str) -> StepMatchResult:
+        try:
+            expression = cls._expression(pattern)
+            if expression is None:
+                return StepMatchResult(
+                    StepMatchStatus.UNRESOLVED,
+                    "Cucumber expression could not be constructed.",
+                )
+            status = (
+                StepMatchStatus.MATCH
+                if expression.match(step_text) is not None
+                else StepMatchStatus.NO_MATCH
+            )
+            return StepMatchResult(status)
+        except Exception as exc:
+            return StepMatchResult(
+                StepMatchStatus.UNRESOLVED,
+                f"{exc.__class__.__name__}: {exc}",
+            )
 
     @classmethod
     @lru_cache(maxsize=4096)
-    def _compiled_pattern(cls, pattern: str) -> re.Pattern[str] | None:
-        """Compile each distinct Cucumber pattern once per process."""
-
-        try:
-            return re.compile(cls._pattern_to_regex(pattern))
-        except re.error:
-            # A malformed/custom Java regex should not break the whole repository scan.
+    def _expression(cls, pattern: str) -> Any | None:
+        clean = pattern.strip()
+        if not clean:
             return None
+        registry = ParameterTypeRegistry()
+        if clean.startswith("^") or clean.endswith("$"):
+            return RegularExpression(clean, registry)
+        return CucumberExpression(clean, registry)
 
     @classmethod
     @lru_cache(maxsize=4096)
     def anchor_token(cls, pattern: str) -> str | None:
-        """Return a literal token guaranteed to occur in every match when safely derivable.
-
-        For Cucumber expressions, text outside ``{parameter}`` placeholders is literal. For
-        explicit regular expressions, ARE only uses the deterministic literal prefix before the
-        first regex metacharacter. Anything more complex deliberately falls back to full matching.
-        """
+        """Return only anchors that are guaranteed under Cucumber semantics."""
 
         clean = pattern.strip()
         if not clean:
             return None
-
         if clean.startswith("^") or clean.endswith("$"):
-            literal_only = cls._regex_literal_prefix(clean)
-        else:
-            literal_only = cls._PARAMETER_RE.sub(" ", clean)
+            return None
 
+        # Alternatives, optionals and escapes can make an apparent literal token optional.
+        # Keep these expressions in the full-match fallback bucket rather than risk false negatives.
+        if any(symbol in clean for symbol in ("/", "(", ")", "\\")):
+            return None
+
+        literal_only = cls._PARAMETER_RE.sub(" ", clean)
         tokens = [
             token.lower()
             for token in cls._TOKEN_RE.findall(literal_only)
             if len(token) >= cls._MIN_ANCHOR_LENGTH
         ]
-        if not tokens:
-            return None
-        return max(tokens, key=len)
-
-    @classmethod
-    def _regex_literal_prefix(cls, pattern: str) -> str:
-        """Return only the definitely-literal prefix of a Java regex pattern."""
-
-        text = pattern[1:] if pattern.startswith("^") else pattern
-        prefix: list[str] = []
-        for char in text:
-            if char in cls._REGEX_META:
-                break
-            prefix.append(char)
-        return "".join(prefix)
+        return max(tokens, key=len) if tokens else None
 
     @classmethod
     @lru_cache(maxsize=262_144)
     def text_tokens(cls, step_text: str) -> frozenset[str]:
-        """Return normalized word tokens used for safe candidate lookup."""
-
-        return frozenset(token.lower() for token in cls._TOKEN_RE.findall(step_text))
-
-    @classmethod
-    def _pattern_to_regex(cls, pattern: str) -> str:
-        clean = pattern.strip()
-
-        # Cucumber also accepts regular-expression step definitions. Preserve them as regex
-        # when they are explicitly anchored instead of escaping them as plain text.
-        if clean.startswith("^") or clean.endswith("$"):
-            return clean
-
-        parts: list[str] = []
-        cursor = 0
-        for match in cls._PARAMETER_RE.finditer(clean):
-            parts.append(re.escape(clean[cursor : match.start()]))
-            parameter_name = match.group("name").strip().lower()
-            parts.append(cls._CUCUMBER_PARAMETER_PATTERNS.get(parameter_name, r".+?"))
-            cursor = match.end()
-        parts.append(re.escape(clean[cursor:]))
-        return "".join(parts)
+        return frozenset(
+            token.lower() for token in cls._TOKEN_RE.findall(step_text)
+        )

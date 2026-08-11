@@ -13,10 +13,15 @@ from automation_repository_explorer.models.domain import (
     RepositoryFile,
 )
 from automation_repository_explorer.parsers.base import RepositoryParser
+from automation_repository_explorer.parsers.csv_parser import CsvParser
 from automation_repository_explorer.parsers.feature_parser import FeatureParser
-from automation_repository_explorer.parsers.java_parser import JavaParser
+from automation_repository_explorer.parsers.ini_parser import IniParser
+from automation_repository_explorer.parsers.jdt_project_analyzer import JdtProjectAnalyzer
+from automation_repository_explorer.parsers.json_parser import JsonParser
 from automation_repository_explorer.parsers.property_parser import PropertyParser
-from automation_repository_explorer.parsers.text_resource_parser import TextResourceParser
+from automation_repository_explorer.parsers.toml_parser import TomlParser
+from automation_repository_explorer.parsers.xml_parser import XmlParser
+from automation_repository_explorer.parsers.yaml_parser import YamlParser
 from automation_repository_explorer.services.scanner import ProgressCallback, RepositoryScanner
 
 LOGGER = logging.getLogger(__name__)
@@ -24,8 +29,6 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class ParseIssue:
-    """A parser diagnostic produced while exploring a supported repository file."""
-
     file_path: Path
     parser_name: str
     message: str
@@ -34,51 +37,51 @@ class ParseIssue:
 
 @dataclass(slots=True)
 class RepositoryIndex:
-    """Static repository index produced from parsers."""
-
     root: Path
     files: tuple[RepositoryFile, ...]
     features: tuple[FeatureDocument, ...] = field(default_factory=tuple)
     java_classes: tuple[JavaClass, ...] = field(default_factory=tuple)
     properties: tuple[PropertyEntry, ...] = field(default_factory=tuple)
     parse_issues: tuple[ParseIssue, ...] = field(default_factory=tuple)
+    java_analysis_complete: bool = True
+    java_analysis_backend: str = "eclipse-jdt"
 
 
 class RepositoryIndexer:
-    """Coordinates scanner and parsers to build a repository index."""
+    """Build an index using official/standards-based parsers plus Eclipse JDT."""
 
     def __init__(
         self,
         parsers: tuple[RepositoryParser[object], ...] | None = None,
+        java_analyzer: JdtProjectAnalyzer | None = None,
     ) -> None:
-        self._feature_parser = FeatureParser()
-        self._java_parser = JavaParser()
-        self._property_parser = PropertyParser()
-        self._text_resource_parser = TextResourceParser()
         self._parsers = parsers or (
-            self._feature_parser,
-            self._java_parser,
-            self._property_parser,
-            self._text_resource_parser,
+            FeatureParser(),
+            PropertyParser(),
+            JsonParser(),
+            XmlParser(),
+            YamlParser(),
+            CsvParser(),
+            TomlParser(),
+            IniParser(),
         )
+        self._java_analyzer = java_analyzer or JdtProjectAnalyzer()
 
     @property
     def supported_extensions(self) -> set[str]:
-        """Return every extension understood by configured parsers."""
-
-        return {
+        extensions = {
             extension
             for parser in self._parsers
             for extension in parser.supported_extensions
         }
+        extensions.add(".java")
+        return extensions
 
     def build_index(
         self,
         repository_path: Path,
         progress_callback: ProgressCallback | None = None,
     ) -> RepositoryIndex:
-        """Scan and parse a repository while retaining non-fatal diagnostics."""
-
         scanner = RepositoryScanner(self.supported_extensions)
         files = scanner.scan(repository_path, progress_callback=progress_callback)
 
@@ -88,18 +91,25 @@ class RepositoryIndexer:
         parse_issues: list[ParseIssue] = []
 
         parser_by_extension = self._parser_map()
-        total_files = len(files)
-        last_reported_percent = -1
+        non_java_files = tuple(
+            repository_file
+            for repository_file in files
+            if repository_file.extension != ".java"
+        )
+        java_files = tuple(
+            repository_file.path
+            for repository_file in files
+            if repository_file.extension == ".java"
+        )
 
-        for index, repository_file in enumerate(files, start=1):
-            if progress_callback and total_files:
-                percent = 10 + int((index / total_files) * 70)
-                if percent != last_reported_percent or index == total_files:
-                    progress_callback(
-                        percent,
-                        f"Parsing {index}/{total_files}: {repository_file.path.name}",
-                    )
-                    last_reported_percent = percent
+        total_non_java = len(non_java_files)
+        for index, repository_file in enumerate(non_java_files, start=1):
+            if progress_callback and total_non_java:
+                percent = 10 + int((index / total_non_java) * 52)
+                progress_callback(
+                    percent,
+                    f"Parsing {index}/{total_non_java}: {repository_file.path.name}",
+                )
 
             parser = parser_by_extension.get(repository_file.extension)
             if parser is None:
@@ -107,22 +117,21 @@ class RepositoryIndexer:
                     ParseIssue(
                         file_path=repository_file.path,
                         parser_name="none",
-                        message=f"No parser registered for extension {repository_file.extension}",
-                        severity="error",
+                        message=f"No parser registered for {repository_file.extension}",
                     )
                 )
                 continue
 
             try:
                 result = parser.parse(repository_file.path)
-            except Exception as exc:  # noqa: BLE001 - one file must not stop whole repository scan
-                issue = ParseIssue(
-                    file_path=repository_file.path,
-                    parser_name=parser.__class__.__name__,
-                    message=str(exc) or exc.__class__.__name__,
-                    severity="error",
+            except Exception as exc:  # noqa: BLE001 - isolate malformed files
+                parse_issues.append(
+                    ParseIssue(
+                        file_path=repository_file.path,
+                        parser_name=parser.__class__.__name__,
+                        message=str(exc) or exc.__class__.__name__,
+                    )
                 )
-                parse_issues.append(issue)
                 LOGGER.warning(
                     "Failed to parse %s with %s: %s",
                     repository_file.path,
@@ -140,12 +149,6 @@ class RepositoryIndexer:
                         severity="warning",
                     )
                 )
-                LOGGER.warning(
-                    "Parsed %s with %s warning: %s",
-                    repository_file.path,
-                    parser.__class__.__name__,
-                    warning,
-                )
 
             for item in result.items:
                 if isinstance(item, FeatureDocument):
@@ -155,17 +158,45 @@ class RepositoryIndexer:
                 elif isinstance(item, PropertyEntry):
                     properties.append(item)
 
+        java_analysis_complete = True
+        if java_files:
+            if progress_callback:
+                progress_callback(
+                    64,
+                    f"Analyzing {len(java_files)} Java file(s) with Eclipse JDT...",
+                )
+            try:
+                jdt_result = self._java_analyzer.analyze(repository_path, java_files)
+                java_classes.extend(jdt_result.classes)
+                parse_issues.extend(
+                    ParseIssue(
+                        file_path=diagnostic.file_path,
+                        parser_name="EclipseJDT",
+                        message=diagnostic.message,
+                        severity=diagnostic.severity,
+                    )
+                    for diagnostic in jdt_result.diagnostics
+                )
+            except Exception as exc:  # noqa: BLE001 - surface JDT failure without fake certainty
+                java_analysis_complete = False
+                parse_issues.append(
+                    ParseIssue(
+                        file_path=repository_path,
+                        parser_name="EclipseJDT",
+                        message=str(exc) or exc.__class__.__name__,
+                        severity="error",
+                    )
+                )
+                LOGGER.warning("Eclipse JDT analysis failed: %s", exc)
+
         if progress_callback:
             errors = sum(issue.severity == "error" for issue in parse_issues)
             warnings = sum(issue.severity == "warning" for issue in parse_issues)
-            if errors or warnings:
-                progress_callback(
-                    80,
-                    f"Parsed {total_files} supported files with {errors} error(s) and "
-                    f"{warnings} warning(s).",
-                )
-            else:
-                progress_callback(80, f"Parsed all {total_files} supported files successfully.")
+            progress_callback(
+                80,
+                f"Indexed {len(files)} supported files with "
+                f"{errors} error(s) and {warnings} warning(s).",
+            )
 
         return RepositoryIndex(
             root=repository_path,
@@ -174,6 +205,8 @@ class RepositoryIndexer:
             java_classes=tuple(java_classes),
             properties=tuple(properties),
             parse_issues=tuple(parse_issues),
+            java_analysis_complete=java_analysis_complete,
+            java_analysis_backend="eclipse-jdt",
         )
 
     def _parser_map(self) -> dict[str, RepositoryParser[object]]:

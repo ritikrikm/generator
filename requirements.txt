@@ -1,2 +1,2 @@
-rapidfuzz>=3.9.0
-streamlit>=1.36.0
+# ARE local desktop runtime uses only the Python standard library.
+# rapidfuzz is optional; search falls back to difflib when it is not installed.

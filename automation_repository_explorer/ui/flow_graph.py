@@ -1,4 +1,4 @@
-"""Flow graph helpers shared by Streamlit pages."""
+"""Flow graph helpers shared by ARE user interfaces."""
 
 from __future__ import annotations
 
@@ -20,14 +20,24 @@ def relationship_neighborhood(
     *,
     max_depth: int = 5,
     include_examples: bool = False,
+    max_nodes: int | None = 120,
 ) -> tuple[tuple[GraphNode, ...], tuple[GraphEdge, ...]]:
-    """Return an interactive subgraph around one selected node."""
+    """Return a focused interactive subgraph around one selected node.
+
+    Repository analysis itself remains complete. ``max_nodes`` only limits the visual
+    neighborhood so a high-degree node in a large repository cannot create an unreadable
+    diagram containing thousands of nodes. The traversal is breadth-first, so the selected
+    node and its nearest relationships are retained first.
+    """
 
     nodes = tuple(
         node
         for node in context.graph.traverse(selected_node_id, max_depth=max_depth)
         if include_examples or node.type != NodeType.EXAMPLE_VALUE
     )
+    if max_nodes is not None and max_nodes > 0:
+        nodes = nodes[:max_nodes]
+
     node_ids = {node.id for node in nodes}
     edges = tuple(
         edge

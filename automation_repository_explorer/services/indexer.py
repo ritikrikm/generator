@@ -22,6 +22,15 @@ from automation_repository_explorer.services.scanner import ProgressCallback, Re
 LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True, slots=True)
+class ParseIssue:
+    """A supported repository file that ARE could not fully parse."""
+
+    file_path: Path
+    parser_name: str
+    message: str
+
+
 @dataclass(slots=True)
 class RepositoryIndex:
     """Static repository index produced from parsers."""
@@ -31,6 +40,7 @@ class RepositoryIndex:
     features: tuple[FeatureDocument, ...] = field(default_factory=tuple)
     java_classes: tuple[JavaClass, ...] = field(default_factory=tuple)
     properties: tuple[PropertyEntry, ...] = field(default_factory=tuple)
+    parse_issues: tuple[ParseIssue, ...] = field(default_factory=tuple)
 
 
 class RepositoryIndexer:
@@ -66,7 +76,7 @@ class RepositoryIndexer:
         repository_path: Path,
         progress_callback: ProgressCallback | None = None,
     ) -> RepositoryIndex:
-        """Scan and parse a repository."""
+        """Scan and parse a repository while retaining non-fatal parse diagnostics."""
 
         scanner = RepositoryScanner(self.supported_extensions)
         files = scanner.scan(repository_path, progress_callback=progress_callback)
@@ -74,6 +84,7 @@ class RepositoryIndexer:
         features: list[FeatureDocument] = []
         java_classes: list[JavaClass] = []
         properties: list[PropertyEntry] = []
+        parse_issues: list[ParseIssue] = []
 
         parser_by_extension = self._parser_map()
         total_files = len(files)
@@ -91,11 +102,30 @@ class RepositoryIndexer:
 
             parser = parser_by_extension.get(repository_file.extension)
             if parser is None:
+                parse_issues.append(
+                    ParseIssue(
+                        file_path=repository_file.path,
+                        parser_name="none",
+                        message=f"No parser registered for extension {repository_file.extension}",
+                    )
+                )
                 continue
+
             try:
                 result = parser.parse(repository_file.path)
-            except Exception as exc:  # noqa: BLE001 - parsing should not stop whole index
-                LOGGER.warning("Failed to parse %s: %s", repository_file.path, exc)
+            except Exception as exc:  # noqa: BLE001 - one file must not stop whole repository scan
+                issue = ParseIssue(
+                    file_path=repository_file.path,
+                    parser_name=parser.__class__.__name__,
+                    message=str(exc) or exc.__class__.__name__,
+                )
+                parse_issues.append(issue)
+                LOGGER.warning(
+                    "Failed to parse %s with %s: %s",
+                    repository_file.path,
+                    parser.__class__.__name__,
+                    exc,
+                )
                 continue
 
             for item in result.items:
@@ -107,7 +137,14 @@ class RepositoryIndexer:
                     properties.append(item)
 
         if progress_callback:
-            progress_callback(80, f"Parsed {total_files} supported files.")
+            if parse_issues:
+                progress_callback(
+                    80,
+                    f"Parsed {total_files - len(parse_issues)}/{total_files} files; "
+                    f"{len(parse_issues)} file(s) need attention.",
+                )
+            else:
+                progress_callback(80, f"Parsed all {total_files} supported files successfully.")
 
         return RepositoryIndex(
             root=repository_path,
@@ -115,6 +152,7 @@ class RepositoryIndexer:
             features=tuple(features),
             java_classes=tuple(java_classes),
             properties=tuple(properties),
+            parse_issues=tuple(parse_issues),
         )
 
     def _parser_map(self) -> dict[str, RepositoryParser[object]]:

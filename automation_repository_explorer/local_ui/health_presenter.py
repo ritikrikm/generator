@@ -76,7 +76,7 @@ def group_health_findings(
             id=f"{group_severity.value}:{check_id}",
             check_name=check_name,
             severity=group_severity,
-            description=findings[0].message if findings else "",
+            description=(findings[0].explanation or findings[0].message) if findings else "",
             findings=tuple(findings),
         )
         for (group_severity, check_id, check_name), findings in grouped.items()

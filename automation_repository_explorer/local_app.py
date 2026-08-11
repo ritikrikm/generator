@@ -21,11 +21,11 @@ except ImportError as exc:  # pragma: no cover - depends on local Python install
         "Tk/Tcl support, then run ARE again."
     ) from exc
 
+from automation_repository_explorer.local_graph import build_local_graph_html
 from automation_repository_explorer.models.graph import NodeType
 from automation_repository_explorer.search.search_engine import SearchMode, SearchResult
 from automation_repository_explorer.services.explorer_service import ExplorationContext, ExplorerService
 from automation_repository_explorer.ui.flow_graph import relationship_neighborhood
-from automation_repository_explorer.ui.interactive_graph import build_interactive_graph_html
 
 
 class ARELocalApp:
@@ -448,10 +448,14 @@ class ARELocalApp:
             messagebox.showinfo("ARE", "No relationship graph is available for this result.")
             return
 
-        html = build_interactive_graph_html(nodes, edges, height=760)
+        graph_html = build_local_graph_html(
+            nodes,
+            edges,
+            title=f"ARE — {result.node.name}",
+        )
         safe_name = str(abs(hash(result.node.id)))
         output_path = Path(tempfile.gettempdir()) / f"are_relationship_{safe_name}.html"
-        output_path.write_text(html, encoding="utf-8")
+        output_path.write_text(graph_html, encoding="utf-8")
         webbrowser.open(output_path.resolve().as_uri())
 
     def _selected_search_result(self) -> SearchResult | None:

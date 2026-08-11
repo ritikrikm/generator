@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from automation_repository_explorer.core.text_reader import read_repository_text
 from automation_repository_explorer.models.domain import PropertyEntry, SourceLocation
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
 
@@ -21,12 +22,8 @@ class TextResourceParser(RepositoryParser[PropertyEntry]):
         return frozenset({".json", ".xml", ".yaml", ".yml"})
 
     def parse(self, file_path: Path) -> ParseResult[PropertyEntry]:
-        try:
-            lines = file_path.read_text(encoding="utf-8-sig").splitlines()
-        except (OSError, UnicodeError) as exc:
-            from automation_repository_explorer.core.exceptions import ParserError
-
-            raise ParserError(f"Unable to read text resource {file_path}: {exc}") from exc
+        read_result = read_repository_text(file_path)
+        lines = read_result.text.splitlines()
 
         entries = tuple(
             PropertyEntry(
@@ -37,4 +34,11 @@ class TextResourceParser(RepositoryParser[PropertyEntry]):
             for line_number, line in enumerate(lines, start=1)
             if line.strip()
         )
-        return ParseResult(file_path=file_path, items=entries)
+
+        warnings: tuple[str, ...] = ()
+        if read_result.used_fallback:
+            warnings = (
+                f"UTF-8 decoding failed; parsed successfully using {read_result.encoding}.",
+            )
+
+        return ParseResult(file_path=file_path, items=entries, warnings=warnings)

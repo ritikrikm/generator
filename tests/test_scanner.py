@@ -1,5 +1,3 @@
-"""Tests for repository scanner behavior."""
-
 from __future__ import annotations
 
 import tempfile
@@ -9,24 +7,34 @@ from pathlib import Path
 from automation_repository_explorer.services.scanner import RepositoryScanner
 
 
-class RepositoryScannerTests(unittest.TestCase):
-    """Validate repository scanner filtering."""
-
-    def test_scan_skips_generated_directories(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            repository_root = Path(temp_dir)
-            feature_file = repository_root / "src/test/features/home/Home.feature"
-            generated_file = repository_root / "target/generated-test-sources/Generated.feature"
+class RepositoryScannerTest(unittest.TestCase):
+    def test_scans_supported_files_at_arbitrary_folder_depth(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            deep = root / "team" / "whatever" / "level1" / "level2" / "level3"
+            deep.mkdir(parents=True)
+            java_file = deep / "Anything.java"
+            feature_file = root / "another" / "strange" / "folder" / "Flow.feature"
             feature_file.parent.mkdir(parents=True)
-            generated_file.parent.mkdir(parents=True)
-            feature_file.write_text("Feature: Home\n", encoding="utf-8")
-            generated_file.write_text("Feature: Generated\n", encoding="utf-8")
+            java_file.write_text("class Anything {}", encoding="utf-8")
+            feature_file.write_text("Feature: Flow", encoding="utf-8")
 
-            files = RepositoryScanner({".feature"}).scan(repository_root)
+            scanner = RepositoryScanner({".java", ".feature"})
+            files = scanner.scan(root)
 
-        self.assertEqual(len(files), 1)
-        self.assertEqual(files[0].path.name, "Home.feature")
+        paths = {item.path.name for item in files}
+        self.assertEqual(paths, {"Anything.java", "Flow.feature"})
 
+    def test_ignores_generated_directories_case_insensitively(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generated = root / "TARGET" / "nested"
+            generated.mkdir(parents=True)
+            (generated / "Generated.java").write_text("class Generated {}", encoding="utf-8")
+            source = root / "custom" / "src"
+            source.mkdir(parents=True)
+            (source / "Real.java").write_text("class Real {}", encoding="utf-8")
 
-if __name__ == "__main__":
-    unittest.main()
+            files = RepositoryScanner({".java"}).scan(root)
+
+        self.assertEqual([item.path.name for item in files], ["Real.java"])

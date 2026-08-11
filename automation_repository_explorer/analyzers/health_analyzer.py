@@ -232,8 +232,9 @@ class RepositoryHealthAnalyzer:
             "No static Java reference to this property key was resolved.",
         )
 
-    @staticmethod
+    @classmethod
     def _check_method_without_known_caller(
+        cls,
         graph: RepositoryGraph,
         node: GraphNode,
     ) -> HealthFinding | None:
@@ -243,11 +244,39 @@ class RepositoryHealthAnalyzer:
         incoming_relations = {edge.relation for edge in graph.parent_edges(node.id)}
         if RelationType.CALLS in incoming_relations or RelationType.IMPLEMENTED_BY in incoming_relations:
             return None
+
+        # A JDT declaration without its own binding key was not semantically resolved enough to
+        # support an "unused" conclusion.
+        if (
+            node.metadata.get("analysis_backend") == "eclipse-jdt"
+            and not node.metadata.get("binding_key")
+        ):
+            return None
+
+        # If JDT reported an unresolved call with the same method name anywhere in the scanned
+        # repository, that unresolved call could be this target (including overloads). Do not turn
+        # a missing edge into a cleanup recommendation.
+        method_name = node.name.rsplit(".", 1)[-1]
+        for possible_source in graph.nodes:
+            unresolved = possible_source.metadata.get("unresolved_calls", ())
+            if not isinstance(unresolved, (tuple, list)):
+                continue
+            if any(cls._simple_call_name(str(expression)) == method_name for expression in unresolved):
+                return None
+
         return _finding(
             _METHOD_WITHOUT_CALLER,
             node.id,
             "No statically resolved caller or Step Definition implementation was found.",
         )
+
+    @staticmethod
+    def _simple_call_name(expression: str) -> str:
+        clean = expression.strip()
+        if clean.startswith("new "):
+            clean = clean[4:]
+        clean = clean.split("(", 1)[0]
+        return clean.rsplit(".", 1)[-1]
 
     @staticmethod
     def _node_sort_key(graph: RepositoryGraph, node_id: str) -> tuple[str, int, str]:

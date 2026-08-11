@@ -162,6 +162,44 @@ class RepositoryHealthAnalyzerTests(unittest.TestCase):
         self.assertNotIn(used_method.id, review_ids)
         self.assertNotIn(used_property.id, review_ids)
 
+    def test_page_object_is_not_checked_as_method_without_caller(self) -> None:
+        graph = RepositoryGraph()
+        page_object = GraphNode(
+            id="page:MMSRBClientPortfolioListViewPage",
+            type=NodeType.PAGE_OBJECT,
+            name="MMSRBClientPortfolioListViewPage",
+            file_path=Path("MMSRBClientPortfolioListViewPage.java"),
+            line=20,
+        )
+        orphan_java_method = GraphNode(
+            id="method:orphan-java",
+            type=NodeType.JAVA_METHOD,
+            name="Helpers.orphanJavaMethod",
+            file_path=Path("Helpers.java"),
+            line=10,
+        )
+        orphan_wrapper_method = GraphNode(
+            id="wrapper:orphan",
+            type=NodeType.WRAPPER_METHOD,
+            name="Wrapper.orphanWrapperMethod",
+            file_path=Path("Wrapper.java"),
+            line=15,
+        )
+
+        for node in (page_object, orphan_java_method, orphan_wrapper_method):
+            graph.add_node(node)
+
+        report = RepositoryHealthAnalyzer().analyze(graph)
+        method_findings = {
+            finding.node_id
+            for finding in report.findings
+            if finding.check_id == "method_without_known_caller"
+        }
+
+        self.assertNotIn(page_object.id, method_findings)
+        self.assertIn(orphan_java_method.id, method_findings)
+        self.assertIn(orphan_wrapper_method.id, method_findings)
+
 
 if __name__ == "__main__":
     unittest.main()

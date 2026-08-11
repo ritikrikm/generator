@@ -18,6 +18,7 @@ from automation_repository_explorer.models.domain import (
     SourceLocation,
     StepDefinition,
 )
+from automation_repository_explorer.parsers.java_build_metadata import JavaBuildMetadataResolver
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,8 +39,13 @@ class JdtProjectAnalyzer:
 
     BACKEND_NAME = "eclipse-jdt"
 
-    def __init__(self, bridge_root: Path | None = None) -> None:
+    def __init__(
+        self,
+        bridge_root: Path | None = None,
+        build_metadata_resolver: JavaBuildMetadataResolver | None = None,
+    ) -> None:
         self._bridge_root = bridge_root or Path(__file__).resolve().parents[2] / "jdt_bridge"
+        self._build_metadata_resolver = build_metadata_resolver or JavaBuildMetadataResolver()
 
     def analyze(
         self,
@@ -57,21 +63,35 @@ class JdtProjectAnalyzer:
                 "Install/configure a JDK and run ARE again."
             )
 
+        repository_root = repository_root.resolve()
+        build_metadata = self._build_metadata_resolver.resolve(repository_root, java_files)
+
         with tempfile.TemporaryDirectory(prefix="are_jdt_") as directory:
-            file_list = Path(directory) / "java-files.txt"
-            file_list.write_text(
-                "\n".join(str(path.resolve()) for path in java_files),
-                encoding="utf-8",
-            )
+            work = Path(directory)
+            file_list = work / "java-files.txt"
+            classpath_file = work / "classpath.txt"
+            source_roots_file = work / "source-roots.txt"
+
+            self._write_path_list(file_list, java_files)
+            self._write_path_list(classpath_file, build_metadata.classpath)
+            self._write_path_list(source_roots_file, build_metadata.source_roots)
+
             command = [
                 java_executable,
                 "-jar",
                 str(jar_path),
                 "--project-root",
-                str(repository_root.resolve()),
+                str(repository_root),
                 "--file-list",
                 str(file_list),
+                "--classpath-file",
+                str(classpath_file),
+                "--source-root-list",
+                str(source_roots_file),
             ]
+            if build_metadata.source_level:
+                command.extend(["--source-level", build_metadata.source_level])
+
             completed = subprocess.run(
                 command,
                 capture_output=True,
@@ -93,11 +113,18 @@ class JdtProjectAnalyzer:
             raise ParserError(f"Eclipse JDT analyzer returned invalid JSON: {exc}") from exc
 
         classes = tuple(self._map_class(item) for item in payload.get("classes", []))
-        diagnostics = tuple(
+        build_diagnostics = tuple(
+            JdtDiagnostic(repository_root, message, "warning")
+            for message in build_metadata.diagnostics
+        )
+        jdt_diagnostics = tuple(
             self._map_diagnostic(item, repository_root)
             for item in payload.get("diagnostics", [])
         )
-        return JdtAnalysisResult(classes=classes, diagnostics=diagnostics)
+        return JdtAnalysisResult(
+            classes=classes,
+            diagnostics=build_diagnostics + jdt_diagnostics,
+        )
 
     def _ensure_bridge(self) -> Path:
         pom = self._bridge_root / "pom.xml"
@@ -153,6 +180,13 @@ class JdtProjectAnalyzer:
         if maven:
             return self._executable_command(Path(maven))
         return None
+
+    @staticmethod
+    def _write_path_list(file_path: Path, values: tuple[Path, ...]) -> None:
+        file_path.write_text(
+            "\n".join(str(path.resolve()) for path in values),
+            encoding="utf-8",
+        )
 
     @staticmethod
     def _executable_command(executable: Path) -> list[str]:

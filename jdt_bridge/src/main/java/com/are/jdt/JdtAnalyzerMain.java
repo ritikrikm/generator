@@ -22,9 +22,9 @@ public final class JdtAnalyzerMain {
 
     public static void main(String[] args) throws Exception {
         Arguments arguments = Arguments.parse(args);
-        List<Path> files = Files.readAllLines(arguments.fileList(), StandardCharsets.UTF_8).stream()
-                .map(String::trim).filter(value -> !value.isEmpty()).map(Path::of)
-                .map(Path::toAbsolutePath).map(Path::normalize).toList();
+        List<Path> files = readPathList(arguments.fileList());
+        List<Path> classpathEntries = readPathList(arguments.classpathFile());
+        List<Path> configuredSourceRoots = readPathList(arguments.sourceRootList());
 
         Map<String, String> sources = new HashMap<>();
         Map<String, String> encodings = new HashMap<>();
@@ -34,7 +34,8 @@ public final class JdtAnalyzerMain {
             sources.put(file.toString(), read(file, encoding));
         }
 
-        Set<Path> sourceRoots = discoverSourceRoots(files, sources);
+        LinkedHashSet<Path> sourceRoots = new LinkedHashSet<>(configuredSourceRoots);
+        sourceRoots.addAll(discoverSourceRoots(files, sources));
         List<Map<String, Object>> classes = new ArrayList<>();
         List<Map<String, Object>> diagnostics = new ArrayList<>();
 
@@ -43,11 +44,20 @@ public final class JdtAnalyzerMain {
         parser.setResolveBindings(true);
         parser.setBindingsRecovery(true);
         parser.setStatementsRecovery(true);
-        parser.setCompilerOptions(JavaCore.getOptions());
 
+        Map<String, String> compilerOptions = JavaCore.getOptions();
+        String sourceLevel = jdtSourceLevel(arguments.sourceLevel());
+        if (sourceLevel != null) {
+            JavaCore.setComplianceOptions(sourceLevel, compilerOptions);
+        }
+        parser.setCompilerOptions(compilerOptions);
+
+        String[] classpath = classpathEntries.stream().map(Path::toString).toArray(String[]::new);
         String[] roots = sourceRoots.stream().map(Path::toString).toArray(String[]::new);
         String[] rootEncodings = sourceRoots.stream().map(root -> "UTF-8").toArray(String[]::new);
-        parser.setEnvironment(new String[0], roots, rootEncodings, true);
+        // includeRunningVMBootclasspath=true keeps the JDK itself resolvable; classpath contains
+        // Maven/Gradle/test dependencies and compiled project outputs discovered by ARE.
+        parser.setEnvironment(classpath, roots, rootEncodings, true);
 
         String[] fileNames = files.stream().map(Path::toString).toArray(String[]::new);
         String[] fileEncodings = files.stream()
@@ -67,6 +77,9 @@ public final class JdtAnalyzerMain {
         payload.put("backend", "eclipse-jdt");
         payload.put("classes", classes);
         payload.put("diagnostics", diagnostics);
+        payload.put("classpathEntries", classpathEntries.size());
+        payload.put("sourceRoots", sourceRoots.size());
+        payload.put("sourceLevel", sourceLevel == null ? "" : sourceLevel);
         System.out.print(new Gson().toJson(payload));
     }
 
@@ -313,6 +326,29 @@ public final class JdtAnalyzerMain {
         return start <= end ? source.substring(start, end) : "";
     }
 
+    private static List<Path> readPathList(Path file) throws IOException {
+        if (file == null || !Files.isRegularFile(file)) return List.of();
+        LinkedHashSet<Path> values = new LinkedHashSet<>();
+        for (String line : Files.readAllLines(file, StandardCharsets.UTF_8)) {
+            String value = line.trim();
+            if (value.isEmpty()) continue;
+            Path path = Path.of(value).toAbsolutePath().normalize();
+            if (Files.exists(path)) values.add(path);
+        }
+        return new ArrayList<>(values);
+    }
+
+    private static String jdtSourceLevel(String value) {
+        if (value == null || value.isBlank()) return null;
+        String clean = value.trim();
+        try {
+            int major = Integer.parseInt(clean.startsWith("1.") ? clean.substring(2) : clean);
+            return major <= 8 ? "1." + major : Integer.toString(major);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
     private static String detectEncoding(Path file) throws IOException {
         byte[] bytes = Files.readAllBytes(file);
         try {
@@ -337,15 +373,32 @@ public final class JdtAnalyzerMain {
         }
     }
 
-    private record Arguments(Path projectRoot, Path fileList) {
+    private record Arguments(Path projectRoot, Path fileList, Path classpathFile,
+                             Path sourceRootList, String sourceLevel) {
         static Arguments parse(String[] args) {
-            Path projectRoot = null; Path fileList = null;
+            Path projectRoot = null;
+            Path fileList = null;
+            Path classpathFile = null;
+            Path sourceRootList = null;
+            String sourceLevel = null;
             for (int index = 0; index < args.length; index++) {
                 if ("--project-root".equals(args[index]) && index + 1 < args.length) projectRoot = Path.of(args[++index]);
                 else if ("--file-list".equals(args[index]) && index + 1 < args.length) fileList = Path.of(args[++index]);
+                else if ("--classpath-file".equals(args[index]) && index + 1 < args.length) classpathFile = Path.of(args[++index]);
+                else if ("--source-root-list".equals(args[index]) && index + 1 < args.length) sourceRootList = Path.of(args[++index]);
+                else if ("--source-level".equals(args[index]) && index + 1 < args.length) sourceLevel = args[++index];
             }
-            if (projectRoot == null || fileList == null) throw new IllegalArgumentException("Usage: --project-root <path> --file-list <path>");
-            return new Arguments(projectRoot.toAbsolutePath().normalize(), fileList.toAbsolutePath().normalize());
+            if (projectRoot == null || fileList == null) {
+                throw new IllegalArgumentException(
+                        "Usage: --project-root <path> --file-list <path> "
+                                + "[--classpath-file <path>] [--source-root-list <path>] [--source-level <version>]");
+            }
+            return new Arguments(
+                    projectRoot.toAbsolutePath().normalize(),
+                    fileList.toAbsolutePath().normalize(),
+                    classpathFile == null ? null : classpathFile.toAbsolutePath().normalize(),
+                    sourceRootList == null ? null : sourceRootList.toAbsolutePath().normalize(),
+                    sourceLevel);
         }
     }
 }

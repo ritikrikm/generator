@@ -57,6 +57,8 @@ class JavaParserTest(unittest.TestCase):
         self.assertEqual(method.calls, ("createCustomer",))
         self.assertEqual(method.call_expressions, ("helper.createCustomer",))
         self.assertIsNotNone(method.step_definition)
+        assert method.step_definition is not None
+        self.assertEqual(method.step_definition.pattern, "a customer with {word} status")
 
     def test_keeps_simple_calls_for_compatibility_and_richer_receiver_calls_for_resolution(self) -> None:
         source = """
@@ -75,3 +77,13 @@ class JavaParserTest(unittest.TestCase):
 
         self.assertEqual(method.calls, ("click", "waitUntilReady"))
         self.assertEqual(method.call_expressions, ("ui.click", "BrowserActions.waitUntilReady"))
+
+    def test_parses_methods_even_when_team_formats_class_on_one_line(self) -> None:
+        source = "class Compact { public void open() { helper.go(); } }"
+        with tempfile.TemporaryDirectory() as directory:
+            file_path = Path(directory) / "Compact.java"
+            file_path.write_text(source, encoding="utf-8")
+            java_class = JavaParser().parse(file_path).items[0]
+
+        self.assertEqual([method.name for method in java_class.methods], ["open"])
+        self.assertEqual(java_class.methods[0].calls, ("go",))

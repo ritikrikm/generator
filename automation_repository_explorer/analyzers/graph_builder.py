@@ -175,6 +175,7 @@ class RepositoryGraphBuilder:
                     "return_type": method.return_type,
                     "parameters": method.parameters,
                     "calls": method.calls,
+                    "call_expressions": method.call_expressions,
                     "string_literals": method.string_literals,
                 },
             )
@@ -271,17 +272,13 @@ class RepositoryGraphBuilder:
         java_classes: tuple[JavaClass, ...],
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]],
     ) -> None:
-        """Link calls conservatively instead of connecting every same-named method.
-
-        A relationship is added when the target is deterministic: a same-class unqualified
-        method, an explicitly class-qualified call, or a globally unique method name. Ambiguous
-        calls are intentionally left unresolved rather than creating incorrect graph edges.
-        """
+        """Link calls only when static evidence identifies a deterministic target."""
 
         for java_class in java_classes:
             for method in java_class.methods:
                 source_id = self._method_id(java_class, method)
-                for call_expression in method.calls:
+                call_expressions = method.call_expressions or method.calls
+                for call_expression in call_expressions:
                     receiver, call_name = self._split_call_expression(call_expression)
                     candidates = methods_by_name.get(call_name, [])
                     resolved = self._resolve_call_candidates(
@@ -299,10 +296,7 @@ class RepositoryGraphBuilder:
                             source_id,
                             target_node.id,
                             RelationType.CALLS,
-                            metadata={
-                                "call": call_expression,
-                                "resolution": "deterministic",
-                            },
+                            metadata={"call": call_expression, "resolution": "deterministic"},
                         )
                     )
 
@@ -330,14 +324,17 @@ class RepositoryGraphBuilder:
                     return qualified
 
         if receiver is None:
-            same_class = [candidate for candidate in candidates if candidate[0].qualified_name == java_class.qualified_name]
+            same_class = [
+                candidate
+                for candidate in candidates
+                if candidate[0].qualified_name == java_class.qualified_name
+            ]
             if same_class:
                 return same_class
 
         if len(candidates) == 1:
             return candidates
 
-        # Imports are useful for static calls where the class name is omitted by static import.
         imported_class_names = {
             imported.rsplit(".", 1)[-1]
             for imported in java_class.imports
@@ -428,7 +425,6 @@ class RepositoryGraphBuilder:
 
     @classmethod
     def _class_node_type(cls, java_class: JavaClass) -> NodeType:
-        # Cucumber glue is identified by annotations, regardless of file/class/folder name.
         if any(method.step_definition is not None for method in java_class.methods):
             return NodeType.JAVA_CLASS
 
@@ -439,7 +435,7 @@ class RepositoryGraphBuilder:
         has_ui_calls = any(
             cls._simple_call_name(call) in cls._SELENIUM_CALL_NAMES
             for method in java_class.methods
-            for call in method.calls
+            for call in (method.call_expressions or method.calls)
         )
         if has_selenium_import or has_ui_calls:
             return NodeType.PAGE_OBJECT
@@ -450,9 +446,10 @@ class RepositoryGraphBuilder:
         if method.step_definition is not None:
             return NodeType.JAVA_METHOD
 
+        call_expressions = method.call_expressions or method.calls
         direct_selenium_calls = {
             cls._simple_call_name(call)
-            for call in method.calls
+            for call in call_expressions
             if cls._simple_call_name(call) in cls._SELENIUM_CALL_NAMES
         }
         if len(direct_selenium_calls) >= 2:

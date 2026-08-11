@@ -38,7 +38,9 @@ class ScrollableCardList(ttk.Frame):
 
     def __init__(self, parent: tk.Misc) -> None:
         super().__init__(parent)
-        background = ttk.Style(self).lookup("TFrame", "background") or "SystemButtonFace"
+        background = ttk.Style(self).lookup("TFrame", "background")
+        if not background:
+            background = str(self.winfo_toplevel().cget("background"))
         self._canvas = tk.Canvas(
             self,
             highlightthickness=0,

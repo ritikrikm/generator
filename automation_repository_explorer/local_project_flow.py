@@ -15,9 +15,10 @@ def build_local_project_flow_html(
 ) -> str:
     """Render a progressive click-to-reveal project navigator.
 
-    Only the current card and its direct children are drawn. This avoids the line explosion
-    of a full repository graph while still allowing the user to drill from Project all the
-    way into real Feature/Scenario/Step/Java/Property/XPath relationships.
+    Only the current card and its direct children are drawn. Direct children preserve the
+    relationship order produced by the repository model. Each visible child is explicitly
+    numbered and laid out left-to-right, top-to-bottom so Feature scenarios and Scenario
+    steps remain visually sequential instead of appearing alphabetically/randomly arranged.
     """
 
     nodes = {
@@ -79,6 +80,7 @@ svg {{ width:100%; height:100%; cursor:grab; }}
 .child-list-title {{ margin:18px 0 8px; font-size:14px; font-weight:700; }}
 .child-card {{ display:block; width:100%; text-align:left; padding:9px; margin:6px 0; background:#1e293b; border:1px solid #334155; border-radius:7px; color:#e5e7eb; cursor:pointer; }}
 .child-card:hover {{ border-color:#22c55e; background:#263449; }}
+.child-card .sequence {{ color:#fbbf24; font-size:12px; font-weight:700; }}
 .child-card .relation {{ color:#86efac; font-size:11px; font-weight:700; }}
 .child-card .ctype {{ color:#93c5fd; font-size:11px; }}
 .child-card .cname {{ margin-top:3px; font-size:12px; word-break:break-word; }}
@@ -126,6 +128,7 @@ const nextPageButton = document.getElementById('next-page');
 const NODE_WIDTH = 240;
 const NODE_HEIGHT = 66;
 const PAGE_SIZE = 24;
+const GRID_COLUMNS = 3;
 let currentNodeId = rootId;
 let currentPage = 0;
 let history = [];
@@ -143,10 +146,10 @@ const esc = value => String(value ?? '')
   .replaceAll('"', '&quot;');
 
 function childrenOf(nodeId) {{
+  // Do not sort here. Model edge order is meaningful for scenarios/steps/method flow.
   return graphEdges
     .filter(edge => edge.source === nodeId && graphNodes[edge.target])
-    .map(edge => ({{ edge, node: graphNodes[edge.target] }}))
-    .sort((a, b) => a.node.kind.localeCompare(b.node.kind) || a.node.name.localeCompare(b.node.name));
+    .map(edge => ({{ edge, node: graphNodes[edge.target] }}));
 }}
 
 function applyTransform() {{
@@ -165,7 +168,7 @@ function truncate(value, limit=34) {{
   return clean.length <= limit ? clean : clean.slice(0, limit - 1) + '…';
 }}
 
-function nodeMarkup(node, x, y, current=false) {{
+function nodeMarkup(node, x, y, current=false, sequenceNumber=null) {{
   const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
   group.setAttribute('class', `node${{current ? ' current' : ''}}`);
   group.setAttribute('transform', `translate(${{x}},${{y}})`);
@@ -181,7 +184,7 @@ function nodeMarkup(node, x, y, current=false) {{
   kind.setAttribute('class', 'kind');
   kind.setAttribute('x', '10');
   kind.setAttribute('y', '22');
-  kind.textContent = node.kind;
+  kind.textContent = sequenceNumber === null ? node.kind : `${{sequenceNumber}}. ${{node.kind}}`;
   group.appendChild(kind);
 
   const name = document.createElementNS('http://www.w3.org/2000/svg', 'text');
@@ -234,33 +237,41 @@ function renderGraph() {{
   if (!current) return;
   const page = childPage();
   const children = page.visible;
-  const maxRows = 8;
   const rowGap = 92;
   const columnGap = 320;
   const startY = 86;
-  const rows = Math.min(maxRows, Math.max(1, children.length));
+  const columns = Math.min(GRID_COLUMNS, Math.max(1, children.length));
+  const rows = Math.max(1, Math.ceil(children.length / columns));
   const currentY = children.length ? startY + ((rows - 1) * rowGap) / 2 : 190;
   const currentPos = [70, currentY];
   const positions = {{ [currentNodeId]: currentPos }};
 
+  // Row-major layout keeps visual reading order 1,2,3 / 4,5,6 / 7,8,9.
   children.forEach((item, index) => {{
-    const column = Math.floor(index / maxRows);
-    const row = index % maxRows;
+    const column = index % columns;
+    const row = Math.floor(index / columns);
     positions[item.node.id] = [420 + column * columnGap, startY + row * rowGap];
   }});
 
   children.forEach(item => edgeMarkup(currentPos, positions[item.node.id], item.edge.label));
   nodeMarkup(current, currentPos[0], currentPos[1], true);
-  children.forEach(item => nodeMarkup(item.node, positions[item.node.id][0], positions[item.node.id][1]));
+  children.forEach((item, index) => {{
+    nodeMarkup(
+      item.node,
+      positions[item.node.id][0],
+      positions[item.node.id][1],
+      false,
+      page.start + index + 1
+    );
+  }});
 
-  const columns = Math.max(1, Math.ceil(children.length / maxRows));
   const graphWidth = Math.max(1000, 420 + columns * columnGap + 140);
   const graphHeight = Math.max(650, startY + rows * rowGap + 120);
   svg.setAttribute('viewBox', `0 0 ${{graphWidth}} ${{graphHeight}}`);
 
   const shownFrom = page.children.length ? page.start + 1 : 0;
   const shownTo = page.start + children.length;
-  summary.textContent = `${{current.kind}} → showing ${{shownFrom}}-${{shownTo}} of ${{page.children.length}} direct children`;
+  summary.textContent = `${{current.kind}} → showing ${{shownFrom}}-${{shownTo}} of ${{page.children.length}} direct children in source order`;
   prevPageButton.disabled = currentPage === 0;
   nextPageButton.disabled = currentPage >= page.pageCount - 1;
 }}
@@ -270,8 +281,9 @@ function breadcrumbText() {{
   return ids.map(id => graphNodes[id]?.name || '').filter(Boolean).join('  ›  ');
 }}
 
-function childCard(item) {{
+function childCard(item, sequenceNumber) {{
   return `<button class="child-card" data-target="${{esc(item.node.id)}}">
+    <div class="sequence">${{sequenceNumber}}.</div>
     <div class="relation">${{esc(item.edge.label)}}</div>
     <div class="ctype">${{esc(item.node.kind)}}</div>
     <div class="cname">${{esc(item.node.name)}}</div>
@@ -293,7 +305,7 @@ function renderDetails() {{
   details.innerHTML = `
     <h2>${{esc(current.name)}}</h2>
     <div class="kind-label">${{esc(current.kind)}}</div>
-    <p class="help">Click a child card to reveal only the next level. Large child sets are paged so cards stay readable.</p>
+    <p class="help">Cards are shown in repository/source relationship order. Follow 1 → 2 → 3 → 4 and click any card to reveal its next level.</p>
     <div class="breadcrumb">${{esc(breadcrumbText())}}</div>
     <dl>
       <dt>File</dt><dd>${{esc(current.file)}}</dd>
@@ -303,7 +315,9 @@ function renderDetails() {{
     </dl>
     <button disabled>Edit File</button>
     <div class="child-list-title">Next level (${{shownFrom}}-${{shownTo}} of ${{children.length}})</div>
-    <div>${{visibleChildren.length ? visibleChildren.map(childCard).join('') : '<div class="empty">No further outgoing project-flow relationships.</div>'}}</div>`;
+    <div>${{visibleChildren.length
+      ? visibleChildren.map((item, index) => childCard(item, page.start + index + 1)).join('')
+      : '<div class="empty">No further outgoing project-flow relationships.</div>'}}</div>`;
 
   details.querySelectorAll('.child-card').forEach(card => {{
     card.addEventListener('click', () => navigate(card.dataset.target));

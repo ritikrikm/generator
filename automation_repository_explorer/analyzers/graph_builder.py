@@ -23,13 +23,37 @@ class RepositoryGraphBuilder:
     """Constructs graph nodes and relationships from a repository index."""
 
     _PLACEHOLDER_RE = re.compile(r"<(?P<name>[^>]+)>")
+    _SELENIUM_IMPORT_PREFIXES = (
+        "org.openqa.selenium",
+        "org.openqa.selenium.support",
+    )
+    _SELENIUM_CALL_NAMES = frozenset(
+        {
+            "findElement",
+            "findElements",
+            "click",
+            "sendKeys",
+            "clear",
+            "submit",
+            "getText",
+            "getAttribute",
+            "isDisplayed",
+            "isEnabled",
+            "isSelected",
+            "selectByVisibleText",
+            "selectByValue",
+            "until",
+            "navigate",
+            "get",
+            "switchTo",
+        }
+    )
 
     def __init__(self, step_matcher: StepDefinitionMatcher | None = None) -> None:
         self._step_matcher = step_matcher or StepDefinitionMatcher()
 
     def build(self, index: RepositoryIndex) -> RepositoryGraph:
         graph = RepositoryGraph()
-        method_node_by_key: dict[tuple[Path, str, int], GraphNode] = {}
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]] = {}
         properties_by_key = {entry.key: entry for entry in index.properties}
         property_nodes: dict[str, GraphNode] = {}
@@ -53,7 +77,6 @@ class RepositoryGraphBuilder:
             class_node = self._add_java_class(graph, java_class)
             for method in java_class.methods:
                 method_node = self._add_java_method(graph, java_class, method, class_node)
-                method_node_by_key[(method.location.file_path, method.name, method.location.line)] = method_node
                 methods_by_name.setdefault(method.name, []).append((java_class, method, method_node))
 
         for entry in index.properties:
@@ -248,14 +271,83 @@ class RepositoryGraphBuilder:
         java_classes: tuple[JavaClass, ...],
         methods_by_name: dict[str, list[tuple[JavaClass, JavaMethod, GraphNode]]],
     ) -> None:
+        """Link calls conservatively instead of connecting every same-named method.
+
+        A relationship is added when the target is deterministic: a same-class unqualified
+        method, an explicitly class-qualified call, or a globally unique method name. Ambiguous
+        calls are intentionally left unresolved rather than creating incorrect graph edges.
+        """
+
         for java_class in java_classes:
             for method in java_class.methods:
                 source_id = self._method_id(java_class, method)
-                for call_name in method.calls:
+                for call_expression in method.calls:
+                    receiver, call_name = self._split_call_expression(call_expression)
                     candidates = methods_by_name.get(call_name, [])
-                    for _target_class, _target_method, target_node in candidates:
-                        if target_node.id != source_id:
-                            graph.add_edge(GraphEdge(source_id, target_node.id, RelationType.CALLS))
+                    resolved = self._resolve_call_candidates(
+                        java_class=java_class,
+                        receiver=receiver,
+                        candidates=candidates,
+                    )
+                    if len(resolved) != 1:
+                        continue
+                    _target_class, _target_method, target_node = resolved[0]
+                    if target_node.id == source_id:
+                        continue
+                    graph.add_edge(
+                        GraphEdge(
+                            source_id,
+                            target_node.id,
+                            RelationType.CALLS,
+                            metadata={
+                                "call": call_expression,
+                                "resolution": "deterministic",
+                            },
+                        )
+                    )
+
+    @classmethod
+    def _resolve_call_candidates(
+        cls,
+        java_class: JavaClass,
+        receiver: str | None,
+        candidates: list[tuple[JavaClass, JavaMethod, GraphNode]],
+    ) -> list[tuple[JavaClass, JavaMethod, GraphNode]]:
+        if not candidates:
+            return []
+
+        if receiver:
+            receiver_tokens = receiver.split(".")
+            class_like_tokens = {token for token in receiver_tokens if token[:1].isupper()}
+            if class_like_tokens:
+                qualified = [
+                    candidate
+                    for candidate in candidates
+                    if candidate[0].name in class_like_tokens
+                    or candidate[0].qualified_name in receiver
+                ]
+                if qualified:
+                    return qualified
+
+        if receiver is None:
+            same_class = [candidate for candidate in candidates if candidate[0].qualified_name == java_class.qualified_name]
+            if same_class:
+                return same_class
+
+        if len(candidates) == 1:
+            return candidates
+
+        # Imports are useful for static calls where the class name is omitted by static import.
+        imported_class_names = {
+            imported.rsplit(".", 1)[-1]
+            for imported in java_class.imports
+            if not imported.endswith(".*")
+        }
+        imported = [candidate for candidate in candidates if candidate[0].name in imported_class_names]
+        if len(imported) == 1:
+            return imported
+
+        return []
 
     def _link_methods_to_properties(
         self,
@@ -334,21 +426,51 @@ class RepositoryGraphBuilder:
         stripped = value.strip()
         return stripped.startswith("//") or stripped.startswith("(//") or "xpath=" in stripped.lower()
 
-    @staticmethod
-    def _class_node_type(java_class: JavaClass) -> NodeType:
-        lower_name = java_class.name.lower()
-        if "page" in lower_name:
+    @classmethod
+    def _class_node_type(cls, java_class: JavaClass) -> NodeType:
+        # Cucumber glue is identified by annotations, regardless of file/class/folder name.
+        if any(method.step_definition is not None for method in java_class.methods):
+            return NodeType.JAVA_CLASS
+
+        has_selenium_import = any(
+            imported.startswith(cls._SELENIUM_IMPORT_PREFIXES)
+            for imported in java_class.imports
+        )
+        has_ui_calls = any(
+            cls._simple_call_name(call) in cls._SELENIUM_CALL_NAMES
+            for method in java_class.methods
+            for call in method.calls
+        )
+        if has_selenium_import or has_ui_calls:
             return NodeType.PAGE_OBJECT
         return NodeType.JAVA_CLASS
 
-    @staticmethod
-    def _method_node_type(java_class: JavaClass, method: JavaMethod) -> NodeType:
-        class_name = java_class.name.lower()
-        if "wrapper" in class_name or "util" in class_name:
+    @classmethod
+    def _method_node_type(cls, java_class: JavaClass, method: JavaMethod) -> NodeType:
+        if method.step_definition is not None:
+            return NodeType.JAVA_METHOD
+
+        direct_selenium_calls = {
+            cls._simple_call_name(call)
+            for call in method.calls
+            if cls._simple_call_name(call) in cls._SELENIUM_CALL_NAMES
+        }
+        if len(direct_selenium_calls) >= 2:
             return NodeType.WRAPPER_METHOD
-        if "page" in class_name:
+        if cls._class_node_type(java_class) == NodeType.PAGE_OBJECT:
             return NodeType.PAGE_OBJECT
         return NodeType.JAVA_METHOD
+
+    @staticmethod
+    def _split_call_expression(call_expression: str) -> tuple[str | None, str]:
+        if "." not in call_expression:
+            return None, call_expression
+        receiver, name = call_expression.rsplit(".", 1)
+        return receiver, name
+
+    @staticmethod
+    def _simple_call_name(call_expression: str) -> str:
+        return call_expression.rsplit(".", 1)[-1]
 
     @staticmethod
     def _file_id(path: Path) -> str:

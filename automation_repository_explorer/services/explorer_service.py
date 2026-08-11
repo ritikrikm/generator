@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from automation_repository_explorer.analyzers.graph_builder import RepositoryGraphBuilder
+from automation_repository_explorer.analyzers.health_analyzer import (
+    RepositoryHealthAnalyzer,
+    RepositoryHealthReport,
+)
 from automation_repository_explorer.analyzers.optimized_graph_builder import (
     OptimizedRepositoryGraphBuilder,
 )
 from automation_repository_explorer.graph.repository_graph import RepositoryGraph
-from automation_repository_explorer.models.graph import GraphNode, NodeType
+from automation_repository_explorer.models.graph import NodeType
 from automation_repository_explorer.search.search_engine import SearchEngine, SearchMode, SearchResult
 from automation_repository_explorer.services.indexer import RepositoryIndex, RepositoryIndexer
 
@@ -41,6 +45,7 @@ class ExplorationContext:
     index: RepositoryIndex
     graph: RepositoryGraph
     summary: RepositorySummary
+    health: RepositoryHealthReport = field(default_factory=RepositoryHealthReport)
 
 
 class ExplorerService:
@@ -50,16 +55,18 @@ class ExplorerService:
         self,
         indexer: RepositoryIndexer | None = None,
         graph_builder: RepositoryGraphBuilder | None = None,
+        health_analyzer: RepositoryHealthAnalyzer | None = None,
     ) -> None:
         self._indexer = indexer or RepositoryIndexer()
         self._graph_builder = graph_builder or OptimizedRepositoryGraphBuilder()
+        self._health_analyzer = health_analyzer or RepositoryHealthAnalyzer()
 
     def explore(
         self,
         repository_path: Path,
         progress_callback: ProgressCallback | None = None,
     ) -> ExplorationContext:
-        """Build index, graph, and summary for a repository path."""
+        """Build index, graph, health findings, and summary for a repository path."""
 
         if progress_callback:
             progress_callback(1, "Starting repository scan...")
@@ -82,7 +89,16 @@ class ExplorerService:
                 95,
                 f"Relationship graph built: {len(graph.nodes)} nodes, {len(graph.edges)} edges.",
             )
-            progress_callback(97, "Calculating repository summary...")
+            progress_callback(97, "Analyzing repository health...")
+
+        health = self._health_analyzer.analyze(graph)
+
+        if progress_callback:
+            progress_callback(
+                98,
+                f"Repository health analysis complete: {health.total} finding(s) for review.",
+            )
+            progress_callback(99, "Calculating repository summary...")
 
         summary = self._summarize(index, graph)
 
@@ -90,12 +106,23 @@ class ExplorerService:
             if index.parse_issues:
                 progress_callback(
                     100,
-                    f"Repository scan complete with {len(index.parse_issues)} parse issue(s).",
+                    (
+                        f"Repository scan complete with {len(index.parse_issues)} parse issue(s) "
+                        f"and {health.total} health finding(s)."
+                    ),
                 )
             else:
-                progress_callback(100, "Repository scan complete.")
+                progress_callback(
+                    100,
+                    f"Repository scan complete with {health.total} health finding(s).",
+                )
 
-        return ExplorationContext(index=index, graph=graph, summary=summary)
+        return ExplorationContext(
+            index=index,
+            graph=graph,
+            summary=summary,
+            health=health,
+        )
 
     def search(
         self,

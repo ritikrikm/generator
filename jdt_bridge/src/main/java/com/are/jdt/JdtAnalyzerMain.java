@@ -75,8 +75,12 @@ public final class JdtAnalyzerMain {
                                                 List<Map<String, Object>> diagnostics) {
         String packageName = unit.getPackage() == null ? ""
                 : unit.getPackage().getName().getFullyQualifiedName();
-        List<String> imports = unit.imports().stream().filter(ImportDeclaration.class::isInstance)
-                .map(ImportDeclaration.class::cast).map(JdtAnalyzerMain::importName).toList();
+        List<String> imports = new ArrayList<>();
+        for (Object importObject : unit.imports()) {
+            if (importObject instanceof ImportDeclaration declaration) {
+                imports.add(importName(declaration));
+            }
+        }
 
         int addedProblems = 0;
         for (IProblem problem : unit.getProblems()) {

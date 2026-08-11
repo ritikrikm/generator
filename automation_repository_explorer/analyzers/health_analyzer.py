@@ -121,9 +121,10 @@ _METHOD_WITHOUT_CALLER = HealthCheckDefinition(
 class RepositoryHealthAnalyzer:
     """Run deterministic, conservative health checks over a repository graph."""
 
+    # This rule is intentionally limited to method-level nodes. Page Object nodes represent
+    # classes/components and require class-usage evidence, not CALLS/IMPLEMENTED_BY evidence.
     _METHOD_TYPES = {
         NodeType.JAVA_METHOD,
-        NodeType.PAGE_OBJECT,
         NodeType.WRAPPER_METHOD,
     }
 

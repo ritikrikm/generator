@@ -84,10 +84,19 @@ def main() -> None:
 def _scan_repository(repository_path: Path) -> None:
     """Scan a repository and store the active exploration context."""
 
+    progress_bar = st.progress(1, text="1% — Starting repository scan...")
+
+    def update_progress(percent: int, message: str) -> None:
+        safe_percent = max(1, min(percent, 100))
+        progress_bar.progress(safe_percent, text=f"{safe_percent}% — {message}")
+
     try:
-        with st.spinner("Scanning repository..."):
-            context = get_service().explore(repository_path)
+        context = get_service().explore(
+            repository_path,
+            progress_callback=update_progress,
+        )
     except RepositoryScanError as exc:
+        progress_bar.empty()
         st.error(str(exc))
         st.info(
             "If this path is on your company laptop, run ARE locally on that laptop. "
@@ -97,6 +106,7 @@ def _scan_repository(repository_path: Path) -> None:
 
     set_repository_path(repository_path)
     set_context(context)
+    progress_bar.progress(100, text="100% — Repository scan complete.")
     st.success("Repository scanned.")
 
 

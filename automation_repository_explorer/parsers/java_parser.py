@@ -36,11 +36,9 @@ class JavaParser(RepositoryParser[JavaClass]):
         r"(?P<name>[A-Za-z_][A-Za-z0-9_]*)\b"
     )
     _ANNOTATION_RE = re.compile(
-        r"@(?:[A-Za-z_][\w$]*\.)*"
-        r"(?P<keyword>Given|When|Then|And|But)\s*\(\s*"
-        r'(?P<quote>["\'])'
-        r"(?P<pattern>(?:\\.|(?!\1).)*?)"
-        r"(?P=quote)\s*\)",
+        r'@(?:[A-Za-z_][\w$]*\.)*'
+        r'(?P<keyword>Given|When|Then|And|But)\s*\(\s*"'
+        r'(?P<pattern>(?:\\.|[^"\\])*)"\s*\)',
         re.DOTALL,
     )
     _METHOD_RE = re.compile(
@@ -77,6 +75,7 @@ class JavaParser(RepositoryParser[JavaClass]):
             "assert",
         }
     )
+    _NON_CLASS_JAVA_FILES = frozenset({"package-info.java", "module-info.java"})
 
     @property
     def supported_extensions(self) -> frozenset[str]:
@@ -95,6 +94,8 @@ class JavaParser(RepositoryParser[JavaClass]):
 
         class_match = self._CLASS_RE.search(source)
         if not class_match:
+            if file_path.name.lower() in self._NON_CLASS_JAVA_FILES:
+                return ParseResult(file_path=file_path, items=tuple())
             raise ParserError(f"No Java class/interface/enum/record declaration found in {file_path}")
 
         class_name = class_match.group("name")
@@ -210,7 +211,9 @@ class JavaParser(RepositoryParser[JavaClass]):
         prefix = source[line_start:start].strip()
         if not prefix:
             return True
-        return prefix.startswith("@")
+        if prefix.startswith("@"):
+            return True
+        return prefix.endswith(("{", "}", ";"))
 
     @staticmethod
     def _annotation_start(source: str, method_start: int) -> int:

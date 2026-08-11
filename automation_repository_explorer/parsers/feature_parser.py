@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from automation_repository_explorer.core.exceptions import ParserError
+from automation_repository_explorer.core.text_reader import read_repository_text
 from automation_repository_explorer.models.domain import (
     ExamplesTable,
     FeatureDocument,
@@ -39,10 +40,13 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
 
     def parse(self, file_path: Path) -> ParseResult[FeatureDocument]:
         LOGGER.debug("Parsing feature file %s", file_path)
-        try:
-            lines = file_path.read_text(encoding="utf-8-sig").splitlines()
-        except (OSError, UnicodeError) as exc:
-            raise ParserError(f"Unable to read feature file {file_path}: {exc}") from exc
+        read_result = read_repository_text(file_path)
+        lines = read_result.text.splitlines()
+        warnings: list[str] = []
+        if read_result.used_fallback:
+            warnings.append(
+                f"UTF-8 decoding failed; parsed successfully using {read_result.encoding}."
+            )
 
         feature_name = ""
         feature_line = 1
@@ -176,6 +180,7 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
                     file_path=file_path,
                     start_index=index + 1,
                     tags=examples_tags,
+                    warnings=warnings,
                 )
                 if table is not None:
                     current_examples.append(table)
@@ -199,6 +204,7 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
                     scenarios=tuple(scenarios),
                 ),
             ),
+            warnings=tuple(warnings),
         )
 
     def _parse_examples_table(
@@ -207,6 +213,7 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
         file_path: Path,
         start_index: int,
         tags: tuple[str, ...],
+        warnings: list[str],
     ) -> tuple[ExamplesTable | None, int]:
         index = start_index
 
@@ -243,10 +250,13 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
 
             values = self._split_table_row(lines[index])
             if len(values) != len(headers):
-                raise ParserError(
-                    f"Examples row in {file_path}:{index + 1} has {len(values)} values "
-                    f"but {len(headers)} headers"
+                warnings.append(
+                    f"Examples row {index + 1} has {len(values)} values but "
+                    f"{len(headers)} headers; row skipped and remaining file continued."
                 )
+                index += 1
+                continue
+
             rows.append(dict(zip(headers, values, strict=True)))
             index += 1
 
@@ -262,4 +272,35 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
 
     @staticmethod
     def _split_table_row(row: str) -> list[str]:
-        return [cell.strip().replace("\\n", "\n") for cell in row.strip().strip("|").split("|")]
+        """Split a Gherkin table row while preserving escaped pipes (\|)."""
+
+        text = row.strip()
+        if text.startswith("|"):
+            text = text[1:]
+        if text.endswith("|") and not text.endswith("\\|"):
+            text = text[:-1]
+
+        cells: list[str] = []
+        current: list[str] = []
+        escaped = False
+        for char in text:
+            if escaped:
+                if char == "n":
+                    current.append("\n")
+                else:
+                    current.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == "|":
+                cells.append("".join(current).strip())
+                current = []
+                continue
+            current.append(char)
+
+        if escaped:
+            current.append("\\")
+        cells.append("".join(current).strip())
+        return cells

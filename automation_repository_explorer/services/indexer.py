@@ -17,7 +17,7 @@ from automation_repository_explorer.parsers.feature_parser import FeatureParser
 from automation_repository_explorer.parsers.java_parser import JavaParser
 from automation_repository_explorer.parsers.property_parser import PropertyParser
 from automation_repository_explorer.parsers.text_resource_parser import TextResourceParser
-from automation_repository_explorer.services.scanner import RepositoryScanner
+from automation_repository_explorer.services.scanner import ProgressCallback, RepositoryScanner
 
 LOGGER = logging.getLogger(__name__)
 
@@ -61,18 +61,35 @@ class RepositoryIndexer:
             for extension in parser.supported_extensions
         }
 
-    def build_index(self, repository_path: Path) -> RepositoryIndex:
+    def build_index(
+        self,
+        repository_path: Path,
+        progress_callback: ProgressCallback | None = None,
+    ) -> RepositoryIndex:
         """Scan and parse a repository."""
 
         scanner = RepositoryScanner(self.supported_extensions)
-        files = scanner.scan(repository_path)
+        files = scanner.scan(repository_path, progress_callback=progress_callback)
 
         features: list[FeatureDocument] = []
         java_classes: list[JavaClass] = []
         properties: list[PropertyEntry] = []
 
         parser_by_extension = self._parser_map()
-        for repository_file in files:
+        total_files = len(files)
+        last_reported_percent = -1
+
+        for index, repository_file in enumerate(files, start=1):
+            if progress_callback and total_files:
+                percent = 10 + int((index / total_files) * 70)
+                # Avoid repainting Streamlit for every single file in very large repositories.
+                if percent != last_reported_percent or index == total_files:
+                    progress_callback(
+                        percent,
+                        f"Parsing {index}/{total_files}: {repository_file.path.name}",
+                    )
+                    last_reported_percent = percent
+
             parser = parser_by_extension.get(repository_file.extension)
             if parser is None:
                 continue
@@ -89,6 +106,9 @@ class RepositoryIndexer:
                     java_classes.append(item)
                 elif isinstance(item, PropertyEntry):
                     properties.append(item)
+
+        if progress_callback:
+            progress_callback(80, f"Parsed {total_files} supported files.")
 
         return RepositoryIndex(
             root=repository_path,

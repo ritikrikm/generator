@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,7 @@ class JdtProjectAnalyzer:
     """Run one Eclipse JDT batch analysis for all Java files in a repository."""
 
     BACKEND_NAME = "eclipse-jdt"
+    TRACE_PREFIX = "[ARE:JDT]"
 
     def __init__(
         self,
@@ -56,16 +58,29 @@ class JdtProjectAnalyzer:
         if not java_files:
             return JdtAnalysisResult(classes=tuple())
 
+        self._trace(f"Starting Java analysis for {len(java_files)} file(s).")
+        self._trace(f"Bridge root: {self._bridge_root}")
+
         jar_path = self._ensure_bridge()
+        self._trace(f"Using JDT bridge JAR: {jar_path}")
+
         java_command = self._java_command()
         if java_command is None:
+            self._trace("Java executable was not found on PATH.")
             raise ParserError(
                 "Eclipse JDT analysis requires Java on PATH. "
                 "Install/configure a JDK and run ARE again."
             )
+        self._trace(f"Java launcher: {self._format_command(java_command)}")
 
         repository_root = repository_root.resolve()
         build_metadata = self._build_metadata_resolver.resolve(repository_root, java_files)
+        self._trace(
+            "Build metadata: "
+            f"{len(build_metadata.classpath)} classpath item(s), "
+            f"{len(build_metadata.source_roots)} source root(s), "
+            f"source level={build_metadata.source_level or 'default'}."
+        )
 
         with tempfile.TemporaryDirectory(prefix="are_jdt_") as directory:
             work = Path(directory)
@@ -97,6 +112,7 @@ class JdtProjectAnalyzer:
 
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
+            self._trace(f"JDT analyzer failed with exit code {completed.returncode}.")
             raise ParserError(
                 "Eclipse JDT analyzer failed" + (f": {detail}" if detail else ".")
             )
@@ -104,6 +120,7 @@ class JdtProjectAnalyzer:
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError as exc:
+            self._trace(f"JDT analyzer returned invalid JSON: {exc}")
             raise ParserError(f"Eclipse JDT analyzer returned invalid JSON: {exc}") from exc
 
         classes = tuple(self._map_class(item) for item in payload.get("classes", []))
@@ -116,6 +133,10 @@ class JdtProjectAnalyzer:
             for item in payload.get("diagnostics", [])
         )
         diagnostics = build_diagnostics + jdt_diagnostics
+        self._trace(
+            f"Analysis completed: {len(classes)} class(es), "
+            f"{len(diagnostics)} diagnostic(s)."
+        )
         return JdtAnalysisResult(
             classes=classes,
             diagnostics=diagnostics,
@@ -140,22 +161,31 @@ class JdtProjectAnalyzer:
 
         newest_source = max(pom.stat().st_mtime, source.stat().st_mtime)
         if jar.is_file() and jar.stat().st_mtime >= newest_source:
+            self._trace("JDT bridge is already built and up to date.")
             return jar
 
+        self._trace("JDT bridge needs a local build; locating Maven.")
         maven = self._maven_command()
         if maven is None:
+            self._trace("Maven executable/wrapper was not found on PATH.")
             raise ParserError(
                 "Eclipse JDT bridge needs Maven for its first local build. "
                 "Put mvn/mvnw on PATH, then run ARE again."
             )
 
+        self._trace(f"Maven launcher: {self._format_command(maven)}")
         command = [*maven, "-q", "-f", str(pom), "-DskipTests", "package"]
         completed = self._run(command)
         if completed.returncode != 0 or not jar.is_file():
             detail = completed.stderr.strip() or completed.stdout.strip()
+            self._trace(
+                "JDT bridge build failed: "
+                f"exit={completed.returncode}, jar_created={jar.is_file()}."
+            )
             raise ParserError(
                 "Could not build the Eclipse JDT bridge" + (f": {detail}" if detail else ".")
             )
+        self._trace("JDT bridge build completed successfully.")
         return jar
 
     def _java_command(self) -> list[str] | None:
@@ -200,14 +230,18 @@ class JdtProjectAnalyzer:
     @staticmethod
     def _executable_command(executable: Path) -> list[str]:
         if os.name == "nt" and executable.suffix.lower() in {".cmd", ".bat"}:
+            # `cmd /s /c <batch path>` is fragile when the batch path contains spaces.
+            # `call` makes the quoted batch path an argument to a cmd builtin instead of
+            # the first token of the command string, so paths under "Program Files" work.
             command_processor = os.environ.get("COMSPEC") or "cmd.exe"
-            return [command_processor, "/d", "/s", "/c", str(executable)]
+            return [command_processor, "/d", "/c", "call", str(executable)]
         return [str(executable)]
 
-    @staticmethod
-    def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    @classmethod
+    def _run(cls, command: list[str]) -> subprocess.CompletedProcess[str]:
+        cls._trace(f"EXEC {cls._format_command(command)}")
         try:
-            return subprocess.run(
+            completed = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
@@ -216,12 +250,28 @@ class JdtProjectAnalyzer:
                 check=False,
             )
         except OSError as exc:
+            cls._trace(f"EXEC failed before process start: {exc.__class__.__name__}: {exc}")
             return subprocess.CompletedProcess(
                 args=command,
                 returncode=getattr(exc, "winerror", None) or 126,
                 stdout="",
                 stderr=f"{exc.__class__.__name__}: {exc}",
             )
+
+        cls._trace(f"EXIT {completed.returncode}")
+        if completed.returncode != 0:
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            if detail:
+                cls._trace(f"PROCESS ERROR: {detail[:2000]}")
+        return completed
+
+    @staticmethod
+    def _format_command(command: list[str]) -> str:
+        return subprocess.list2cmdline(command)
+
+    @classmethod
+    def _trace(cls, message: str) -> None:
+        print(f"{cls.TRACE_PREFIX} {message}", file=sys.stderr, flush=True)
 
     def _map_class(self, item: dict[str, Any]) -> JavaClass:
         file_path = Path(str(item["file"])).resolve()

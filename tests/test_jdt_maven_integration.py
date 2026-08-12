@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,22 @@ from automation_repository_explorer.models.domain import RepositoryFile
 from automation_repository_explorer.models.graph import RelationType
 from automation_repository_explorer.parsers.jdt_project_analyzer import JdtProjectAnalyzer
 from automation_repository_explorer.services.indexer import RepositoryIndex
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe regression test")
+def test_windows_batch_launcher_handles_program_files_style_path(tmp_path: Path) -> None:
+    script = tmp_path / "Program Files" / "Apache Maven" / "bin" / "mvn.cmd"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "@echo off\r\necho ARE_BATCH_PATH_OK\r\nexit /b 0\r\n",
+        encoding="utf-8",
+    )
+
+    command = [*JdtProjectAnalyzer._executable_command(script), "--version"]
+    completed = JdtProjectAnalyzer._run(command)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "ARE_BATCH_PATH_OK" in completed.stdout
 
 
 @pytest.mark.integration

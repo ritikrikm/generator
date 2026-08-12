@@ -32,6 +32,7 @@ class JdtDiagnostic:
 class JdtAnalysisResult:
     classes: tuple[JavaClass, ...]
     diagnostics: tuple[JdtDiagnostic, ...] = tuple()
+    semantic_complete: bool = True
 
 
 class JdtProjectAnalyzer:
@@ -121,9 +122,11 @@ class JdtProjectAnalyzer:
             self._map_diagnostic(item, repository_root)
             for item in payload.get("diagnostics", [])
         )
+        diagnostics = build_diagnostics + jdt_diagnostics
         return JdtAnalysisResult(
             classes=classes,
-            diagnostics=build_diagnostics + jdt_diagnostics,
+            diagnostics=diagnostics,
+            semantic_complete=not diagnostics,
         )
 
     def _ensure_bridge(self) -> Path:

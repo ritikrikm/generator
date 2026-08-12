@@ -33,6 +33,7 @@ class StepDefinitionMatcher:
     _PARAMETER_RE = re.compile(r"\{[^{}]*\}")
     _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
     _MIN_ANCHOR_LENGTH = 3
+    _REGEX_META = frozenset(".[](){}*+?|$")
 
     def matches(self, step: Step, method: JavaMethod) -> bool:
         return (
@@ -88,23 +89,54 @@ class StepDefinitionMatcher:
     @classmethod
     @lru_cache(maxsize=4096)
     def anchor_token(cls, pattern: str) -> str | None:
-        """Return only anchors that are guaranteed under Cucumber semantics."""
+        """Return a token that is guaranteed to occur when the expression matches.
 
+        For Cucumber expressions this comes only from unconditional literal text. For regex
+        definitions, only a literal prefix immediately after ``^`` is considered; once regex
+        control flow begins we stop, so alternatives/optionals can never create false negatives.
+        """
         clean = pattern.strip()
         if not clean:
             return None
-        if clean.startswith("^") or clean.endswith("$"):
-            return None
 
-        # Alternatives, optionals and escapes can make an apparent literal token optional.
-        # Keep these expressions in the full-match fallback bucket rather than risk false negatives.
+        if clean.startswith("^") or clean.endswith("$"):
+            literal_prefix = cls._regex_literal_prefix(clean)
+            return cls._best_anchor(literal_prefix)
+
+        # Alternatives, optionals and escapes can make an apparent Cucumber literal optional.
         if any(symbol in clean for symbol in ("/", "(", ")", "\\")):
             return None
-
         literal_only = cls._PARAMETER_RE.sub(" ", clean)
+        return cls._best_anchor(literal_only)
+
+    @classmethod
+    def _regex_literal_prefix(cls, pattern: str) -> str:
+        text = pattern[1:] if pattern.startswith("^") else ""
+        if not text:
+            return ""
+        literal: list[str] = []
+        escaped = False
+        for char in text:
+            if escaped:
+                # Escaped punctuation is literal; escaped regex classes such as \d are not.
+                if char.isalnum():
+                    break
+                literal.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char in cls._REGEX_META:
+                break
+            literal.append(char)
+        return "".join(literal)
+
+    @classmethod
+    def _best_anchor(cls, literal_text: str) -> str | None:
         tokens = [
             token.lower()
-            for token in cls._TOKEN_RE.findall(literal_only)
+            for token in cls._TOKEN_RE.findall(literal_text)
             if len(token) >= cls._MIN_ANCHOR_LENGTH
         ]
         return max(tokens, key=len) if tokens else None

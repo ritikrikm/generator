@@ -1,0 +1,118 @@
+name: ARE Release Gate
+
+on:
+  push:
+    branches:
+      - are-jdt-official-parsers
+  workflow_dispatch:
+
+jobs:
+  full-test:
+    name: Full test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Verify toolchain
+        shell: bash
+        if: runner.os != 'Windows'
+        run: |
+          python --version
+          java -version
+          mvn -version
+
+      - name: Verify Windows toolchain
+        shell: pwsh
+        if: runner.os == 'Windows'
+        run: |
+          python --version
+          where.exe java
+          where.exe mvn
+          java -version
+          mvn -version
+
+      - name: Build JDT bridge
+        run: mvn -f jdt_bridge/pom.xml -DskipTests clean package
+
+      - name: Full Python test suite
+        run: python -m pytest -q
+
+      - name: Smoke-import local desktop entrypoint
+        run: python -c "from automation_repository_explorer.local_app import ARELocalApp; print(ARELocalApp.__name__)"
+
+  release-package:
+    name: Build tested ZIP
+    runs-on: windows-latest
+    needs: full-test
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
+
+      - name: Build JDT bridge
+        shell: pwsh
+        run: mvn -f jdt_bridge/pom.xml -DskipTests clean package
+
+      - name: Final Windows integration check
+        shell: pwsh
+        run: python -m pytest -q tests/test_jdt_maven_integration.py tests/test_official_cucumber.py tests/test_structured_parsers.py tests/test_health_analyzer.py tests/test_project_flow.py tests/test_local_app_entrypoint.py
+
+      - name: Prepare tested package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\ARE | Out-Null
+          robocopy . dist\ARE /E /XD .git .github .venv __pycache__ .pytest_cache dist /XF *.pyc | Out-Null
+          if ($LASTEXITCODE -gt 7) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist\ARE\* -DestinationPath dist\ARE-tested-windows.zip -Force
+
+      - name: Upload tested ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARE-tested-windows
+          path: dist/ARE-tested-windows.zip
+          if-no-files-found: error
+          retention-days: 14

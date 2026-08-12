@@ -173,7 +173,8 @@ class JdtProjectAnalyzer:
         return jar
 
     def _maven_command(self) -> list[str] | None:
-        wrapper_names = ("mvnw.cmd", "mvnw") if os.name == "nt" else ("mvnw", "mvnw.cmd")
+        # Never execute the POSIX mvnw shell script directly on Windows.
+        wrapper_names = ("mvnw.cmd",) if os.name == "nt" else ("mvnw",)
         for wrapper_name in wrapper_names:
             wrapper = self._bridge_root / wrapper_name
             if wrapper.is_file():

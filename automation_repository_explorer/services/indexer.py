@@ -168,6 +168,7 @@ class RepositoryIndexer:
             try:
                 jdt_result = self._java_analyzer.analyze(repository_path, java_files)
                 java_classes.extend(jdt_result.classes)
+                java_analysis_complete = jdt_result.semantic_complete
                 parse_issues.extend(
                     ParseIssue(
                         file_path=diagnostic.file_path,

@@ -59,7 +59,11 @@ class ProjectFlowTests(unittest.TestCase):
 
     def test_project_flow_html_is_local_progressive_paged_and_sequential(self) -> None:
         rendered = build_local_project_flow_html(self.model)
-        self.assertNotIn("https://", rendered)
+        # Repository data may legitimately contain an https URL property. What must remain
+        # local is the renderer itself: no external JS/CSS/CDN dependencies.
+        self.assertNotIn('<script src="http', rendered)
+        self.assertNotIn('<link href="http', rendered)
+        self.assertNotIn("unpkg.com", rendered)
         self.assertIn("Project Home", rendered)
         self.assertIn("Previous cards", rendered)
         self.assertIn("Next cards", rendered)

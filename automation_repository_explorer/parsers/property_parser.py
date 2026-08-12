@@ -6,6 +6,7 @@ from pathlib import Path
 
 import javaproperties
 
+from automation_repository_explorer.core.text_reader import read_repository_text
 from automation_repository_explorer.models.domain import PropertyEntry, SourceLocation
 from automation_repository_explorer.parsers.base import ParseResult, RepositoryParser
 
@@ -18,10 +19,11 @@ class PropertyParser(RepositoryParser[PropertyEntry]):
         return frozenset({".properties"})
 
     def parse(self, file_path: Path) -> ParseResult[PropertyEntry]:
+        read_result = read_repository_text(file_path)
         entries: list[PropertyEntry] = []
         line = 1
 
-        for element in javaproperties.parse(file_path.read_bytes()):
+        for element in javaproperties.parse(read_result.text):
             source = element.source
             if isinstance(element, javaproperties.KeyValue):
                 entries.append(
@@ -36,4 +38,9 @@ class PropertyParser(RepositoryParser[PropertyEntry]):
             else:
                 line += str(source).count("\n")
 
-        return ParseResult(file_path=file_path, items=tuple(entries))
+        warnings: tuple[str, ...] = tuple()
+        if read_result.used_fallback:
+            warnings = (
+                f"UTF-8 decoding failed; parsed successfully using {read_result.encoding}.",
+            )
+        return ParseResult(file_path=file_path, items=tuple(entries), warnings=warnings)

@@ -374,8 +374,10 @@ allprojects {
     @staticmethod
     def _executable_command(executable: Path) -> list[str]:
         if os.name == "nt" and executable.suffix.lower() in {".cmd", ".bat"}:
+            # Use cmd's CALL builtin so a quoted batch path under Program Files is
+            # preserved as one executable path when additional Maven args follow.
             command_processor = os.environ.get("COMSPEC") or "cmd.exe"
-            return [command_processor, "/d", "/s", "/c", str(executable)]
+            return [command_processor, "/d", "/c", "call", str(executable)]
         return [str(executable)]
 
     @staticmethod

@@ -1,4 +1,7 @@
+import os
 from pathlib import Path
+
+import pytest
 
 from automation_repository_explorer.parsers.java_build_metadata import JavaBuildMetadataResolver
 
@@ -47,3 +50,20 @@ def test_fallback_discovers_local_outputs_and_jars(tmp_path: Path) -> None:
 
     assert classes.resolve() in set(resolver._all_compiled_outputs(root.resolve()))
     assert local_jar.resolve() in set(resolver._local_jars(root.resolve()))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe regression test")
+def test_windows_build_metadata_batch_launcher_handles_program_files_path(tmp_path: Path) -> None:
+    script = tmp_path / "Program Files" / "Apache Maven" / "bin" / "mvn.cmd"
+    script.parent.mkdir(parents=True)
+    script.write_text(
+        "@echo off\r\necho ARE_BUILD_METADATA_BATCH_OK\r\nexit /b 0\r\n",
+        encoding="utf-8",
+    )
+
+    resolver = JavaBuildMetadataResolver()
+    command = [*resolver._executable_command(script), "--version"]
+    completed = resolver._run(command, cwd=tmp_path)
+
+    assert completed.returncode == 0, completed.stderr
+    assert "ARE_BUILD_METADATA_BATCH_OK" in completed.stdout

@@ -29,6 +29,46 @@ def test_windows_batch_launcher_handles_program_files_style_path(tmp_path: Path)
 
 
 @pytest.mark.integration
+def test_jdt_auto_language_level_accepts_modern_syntax_without_project_version(tmp_path: Path) -> None:
+    project = tmp_path / "source-only"
+    source = project / "src" / "test" / "java" / "demo" / "ModernSyntax.java"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        '''package demo;
+
+public class ModernSyntax {
+    record Point(int x, int y) {}
+
+    public int direction(int value) {
+        return switch (value) {
+            case 0 -> 0;
+            case 1, 2 -> 1;
+            default -> -1;
+        };
+    }
+
+    public String message() {
+        return """
+                modern-java
+                """;
+    }
+}
+''',
+        encoding="utf-8",
+    )
+
+    result = JdtProjectAnalyzer().analyze(project, (source,))
+    messages = "\n".join(item.message for item in result.diagnostics)
+
+    assert result.classes
+    assert "Arrow in case statement supported from Java" not in messages
+    assert "Switch Expressions are supported from Java" not in messages
+    assert "Records are supported from Java" not in messages
+    assert "Text Blocks are supported from Java" not in messages
+    assert result.semantic_complete is True, messages
+
+
+@pytest.mark.integration
 def test_jdt_resolves_maven_test_dependencies(tmp_path: Path) -> None:
     project = tmp_path / "sample"
     source = project / "src" / "test" / "java" / "demo" / "SampleSteps.java"

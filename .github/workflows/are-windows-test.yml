@@ -1,0 +1,67 @@
+name: ARE Windows Test Gate
+
+on:
+  push:
+    branches: ["automation-repository-explorer"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-test:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Compile all Python files
+        shell: pwsh
+        run: python -m compileall -q automation_repository_explorer tests
+
+      - name: Run full pytest suite
+        shell: pwsh
+        run: python -m pytest -q
+
+      - name: Run Ruff
+        shell: pwsh
+        run: python -m ruff check automation_repository_explorer tests
+
+      - name: Run mypy
+        shell: pwsh
+        run: python -m mypy automation_repository_explorer
+
+      - name: Validate Windows launcher syntax and imports
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "run_are_windows.bat")) { throw "run_are_windows.bat missing" }
+          python -c "import automation_repository_explorer.local_app; import automation_repository_explorer.local_app_enhanced; print('ARE imports OK')"
+
+      - name: Validate package build
+        shell: pwsh
+        run: |
+          python -m pip install build
+          python -m build
+          Get-ChildItem dist
+
+      - name: Create final ZIP smoke package
+        shell: pwsh
+        run: |
+          $items = @('automation_repository_explorer','tests','README.md','pyproject.toml','requirements.txt','requirements-dev.txt','run_are_windows.bat')
+          foreach ($item in $items) { if (-not (Test-Path $item)) { throw "Missing package item: $item" } }
+          Compress-Archive -Path $items -DestinationPath ARE-windows-smoke.zip -Force
+          if (-not (Test-Path 'ARE-windows-smoke.zip')) { throw 'ZIP packaging failed' }
+          Write-Host "ZIP size: $((Get-Item 'ARE-windows-smoke.zip').Length) bytes"

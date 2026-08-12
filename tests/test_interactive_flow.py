@@ -68,7 +68,10 @@ class InteractiveFlowTests(unittest.TestCase):
         nodes, edges = relationship_neighborhood(context, property_node.id)
         rendered = build_local_graph_html(nodes, edges)
 
-        self.assertNotIn("https://", rendered)
+        # Repository data can legitimately contain web URLs (for example a Maven schema).
+        # The offline requirement is that the renderer itself does not load scripts/styles/CDNs.
+        self.assertNotIn('<script src="http', rendered)
+        self.assertNotIn('<link href="http', rendered)
         self.assertNotIn("unpkg.com", rendered)
         self.assertIn("<svg", rendered)
         self.assertIn("Full graph: OFF", rendered)

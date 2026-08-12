@@ -11,14 +11,15 @@ from automation_repository_explorer.local_ui.ide_launcher import IntelliJLaunche
 
 class IntelliJLauncherTests(unittest.TestCase):
     def test_build_command_includes_exact_line_and_file(self) -> None:
+        target = Path("C:/repo/src/test/java/Steps.java")
         command = IntelliJLauncher.build_command(
             Path("idea64.exe"),
-            Path("C:/repo/src/test/java/Steps.java"),
+            target,
             line=141,
         )
         self.assertEqual(
             command,
-            ["idea64.exe", "--line", "141", "C:/repo/src/test/java/Steps.java"],
+            ["idea64.exe", "--line", "141", str(target)],
         )
 
     def test_open_file_launches_only_inside_selected_project(self) -> None:

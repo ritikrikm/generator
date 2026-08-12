@@ -22,26 +22,39 @@ from automation_repository_explorer.parsers.base import ParseResult, RepositoryP
 class FeatureParser(RepositoryParser[FeatureDocument]):
     """Parse .feature files with Cucumber's official Gherkin parser."""
 
+    _SKIPPED_CELL = "__ARE_SKIPPED_MALFORMED_TABLE_ROW__"
+
     @property
     def supported_extensions(self) -> frozenset[str]:
         return frozenset({".feature"})
 
     def parse(self, file_path: Path) -> ParseResult[FeatureDocument]:
         read_result = read_repository_text(file_path)
-        try:
-            document = GherkinParser().parse(read_result.text)
-        except Exception as exc:
-            raise ParserError(f"Gherkin parse failed for {file_path}: {exc}") from exc
-
-        feature = document.get("feature")
-        if not feature:
-            raise ParserError(f"No Gherkin Feature was found in {file_path}")
-
         warnings: list[str] = []
         if read_result.used_fallback:
             warnings.append(
                 f"UTF-8 decoding failed; parsed successfully using {read_result.encoding}."
             )
+
+        source = read_result.text
+        try:
+            document = GherkinParser().parse(source)
+        except Exception as original_exc:
+            recovered_source, recovery_warnings = self._recover_malformed_table_rows(source)
+            if not recovery_warnings:
+                raise ParserError(f"Gherkin parse failed for {file_path}: {original_exc}") from original_exc
+            try:
+                document = GherkinParser().parse(recovered_source)
+            except Exception as recovery_exc:
+                raise ParserError(
+                    f"Gherkin parse failed for {file_path}: {original_exc}; "
+                    f"conservative table-row recovery also failed: {recovery_exc}"
+                ) from recovery_exc
+            warnings.extend(recovery_warnings)
+
+        feature = document.get("feature")
+        if not feature:
+            raise ParserError(f"No Gherkin Feature was found in {file_path}")
 
         feature_background: tuple[Step, ...] = tuple()
         scenarios: list[Scenario] = []
@@ -81,6 +94,77 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
             items=(feature_document,),
             warnings=tuple(warnings),
         )
+
+    @classmethod
+    def _recover_malformed_table_rows(cls, source: str) -> tuple[str, tuple[str, ...]]:
+        """Make only inconsistent Gherkin table rows parseable, preserving line numbers.
+
+        Cucumber correctly rejects a table whose rows have different cell counts. For repository
+        exploration, one malformed row should not hide every later scenario. We therefore replace
+        only inconsistent rows with a same-width sentinel row, let the official parser parse the
+        document, and discard that sentinel from the resulting Examples table.
+        """
+        lines = source.splitlines(keepends=True)
+        warnings: list[str] = []
+        expected_cells: int | None = None
+
+        for index, line in enumerate(lines):
+            stripped = line.lstrip()
+            if not stripped.startswith("|"):
+                expected_cells = None
+                continue
+
+            cells = cls._split_table_row(stripped.rstrip("\r\n"))
+            if expected_cells is None:
+                expected_cells = len(cells)
+                continue
+            if len(cells) == expected_cells:
+                continue
+
+            line_number = index + 1
+            warnings.append(
+                f"Gherkin table row {line_number} has {len(cells)} values but "
+                f"{expected_cells} were expected; row skipped."
+            )
+            indent = line[: len(line) - len(stripped)]
+            newline = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            replacement = " | ".join([cls._SKIPPED_CELL] * expected_cells)
+            lines[index] = f"{indent}| {replacement} |{newline}"
+
+        return "".join(lines), tuple(warnings)
+
+    @staticmethod
+    def _split_table_row(row: str) -> list[str]:
+        """Split a Gherkin table row while preserving escaped pipes/backslashes/newlines."""
+        text = row.strip()
+        if text.startswith("|"):
+            text = text[1:]
+        if text.endswith("|"):
+            text = text[:-1]
+
+        cells: list[str] = []
+        current: list[str] = []
+        escaped = False
+        for char in text:
+            if escaped:
+                if char == "n":
+                    current.append("\n")
+                elif char in {"|", "\\"}:
+                    current.append(char)
+                else:
+                    current.extend(("\\", char))
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == "|":
+                cells.append("".join(current).strip())
+                current = []
+            else:
+                current.append(char)
+        if escaped:
+            current.append("\\")
+        cells.append("".join(current).strip())
+        return cells
 
     def _rule_scenarios(
         self,
@@ -153,6 +237,8 @@ class FeatureParser(RepositoryParser[FeatureDocument]):
         rows: list[dict[str, str]] = []
         for row in example.get("tableBody", []):
             values = tuple(str(cell.get("value", "")) for cell in row.get("cells", []))
+            if self._SKIPPED_CELL in values:
+                continue
             if len(values) != len(headers):
                 line = int(row.get("location", {}).get("line", 1))
                 warnings.append(

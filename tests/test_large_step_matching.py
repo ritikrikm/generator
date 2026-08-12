@@ -24,9 +24,9 @@ class CountingMatcher(StepDefinitionMatcher):
     def __init__(self) -> None:
         self.calls = 0
 
-    def matches_text(self, step_text: str, method: JavaMethod) -> bool:
+    def match_result_text(self, step_text: str, method: JavaMethod):
         self.calls += 1
-        return super().matches_text(step_text, method)
+        return super().match_result_text(step_text, method)
 
 
 class LargeStepMatchingTests(unittest.TestCase):

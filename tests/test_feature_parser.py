@@ -9,7 +9,10 @@ from automation_repository_explorer.parsers.feature_parser import FeatureParser
 
 class FeatureParserTest(unittest.TestCase):
     def test_parses_feature_scenarios_steps_examples_and_tags(self) -> None:
-        file_path = Path("sample_repo/huntress_MMSRB/src/test/resources/features/MMSRBHome.feature")
+        file_path = Path(
+            "sample_repo/huntress_MMSRB/src/test/features/RetailRB/functional/home/"
+            "RetailRBHomeNotification.feature"
+        )
 
         result = FeatureParser().parse(file_path)
 

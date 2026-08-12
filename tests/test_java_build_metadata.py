@@ -52,6 +52,7 @@ def test_fallback_discovers_local_outputs_and_jars(tmp_path: Path) -> None:
     assert local_jar.resolve() in set(resolver._local_jars(root.resolve()))
 
 
+# Regression for the enterprise Windows setup: Maven may live below "Program Files".
 @pytest.mark.skipif(os.name != "nt", reason="Windows cmd.exe regression test")
 def test_windows_build_metadata_batch_launcher_handles_program_files_path(tmp_path: Path) -> None:
     script = tmp_path / "Program Files" / "Apache Maven" / "bin" / "mvn.cmd"

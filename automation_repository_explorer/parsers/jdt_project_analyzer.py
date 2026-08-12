@@ -57,8 +57,8 @@ class JdtProjectAnalyzer:
             return JdtAnalysisResult(classes=tuple())
 
         jar_path = self._ensure_bridge()
-        java_executable = shutil.which("java")
-        if java_executable is None:
+        java_command = self._java_command()
+        if java_command is None:
             raise ParserError(
                 "Eclipse JDT analysis requires Java on PATH. "
                 "Install/configure a JDK and run ARE again."
@@ -78,7 +78,7 @@ class JdtProjectAnalyzer:
             self._write_path_list(source_roots_file, build_metadata.source_roots)
 
             command = [
-                java_executable,
+                *java_command,
                 "-jar",
                 str(jar_path),
                 "--project-root",
@@ -93,14 +93,7 @@ class JdtProjectAnalyzer:
             if build_metadata.source_level:
                 command.extend(["--source-level", build_metadata.source_level])
 
-            completed = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                check=False,
-            )
+            completed = self._run(command)
 
         if completed.returncode != 0:
             detail = completed.stderr.strip() or completed.stdout.strip()
@@ -157,14 +150,7 @@ class JdtProjectAnalyzer:
             )
 
         command = [*maven, "-q", "-f", str(pom), "-DskipTests", "package"]
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        completed = self._run(command)
         if completed.returncode != 0 or not jar.is_file():
             detail = completed.stderr.strip() or completed.stdout.strip()
             raise ParserError(
@@ -172,17 +158,36 @@ class JdtProjectAnalyzer:
             )
         return jar
 
+    def _java_command(self) -> list[str] | None:
+        if os.name == "nt":
+            executable = self._which_windows(("java.exe", "java.cmd", "java.bat"))
+        else:
+            executable = shutil.which("java")
+        return self._executable_command(Path(executable)) if executable else None
+
     def _maven_command(self) -> list[str] | None:
-        # Never execute the POSIX mvnw shell script directly on Windows.
-        wrapper_names = ("mvnw.cmd",) if os.name == "nt" else ("mvnw",)
+        wrapper_names = ("mvnw.cmd", "mvnw.bat") if os.name == "nt" else ("mvnw",)
         for wrapper_name in wrapper_names:
             wrapper = self._bridge_root / wrapper_name
             if wrapper.is_file():
                 return self._executable_command(wrapper)
 
-        maven = shutil.which("mvn")
-        if maven:
-            return self._executable_command(Path(maven))
+        if os.name == "nt":
+            executable = self._which_windows(("mvn.cmd", "mvn.bat", "mvn.exe"))
+        else:
+            executable = shutil.which("mvn")
+        return self._executable_command(Path(executable)) if executable else None
+
+    @staticmethod
+    def _which_windows(names: tuple[str, ...]) -> str | None:
+        """Return only a Windows-native executable/script, never a POSIX shim."""
+        for name in names:
+            executable = shutil.which(name)
+            if not executable:
+                continue
+            suffix = Path(executable).suffix.lower()
+            if suffix in {".exe", ".cmd", ".bat"}:
+                return executable
         return None
 
     @staticmethod
@@ -195,8 +200,28 @@ class JdtProjectAnalyzer:
     @staticmethod
     def _executable_command(executable: Path) -> list[str]:
         if os.name == "nt" and executable.suffix.lower() in {".cmd", ".bat"}:
-            return ["cmd", "/c", str(executable)]
+            command_processor = os.environ.get("COMSPEC") or "cmd.exe"
+            return [command_processor, "/d", "/s", "/c", str(executable)]
         return [str(executable)]
+
+    @staticmethod
+    def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=getattr(exc, "winerror", None) or 126,
+                stdout="",
+                stderr=f"{exc.__class__.__name__}: {exc}",
+            )
 
     def _map_class(self, item: dict[str, Any]) -> JavaClass:
         file_path = Path(str(item["file"])).resolve()

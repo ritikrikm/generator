@@ -1,6 +1,6 @@
 """Resolve project build metadata used by Eclipse JDT binding analysis.
 
-ARE never guesses dependency types from source text.  This module asks the repository's
+ARE never guesses dependency types from source text. This module asks the repository's
 build tool for its runtime/test classpath, then supplements it with local outputs and jars.
 Maven, Gradle and source-only repositories are supported.
 """
@@ -56,8 +56,8 @@ class JavaBuildMetadataResolver:
                 command = self._maven_command(root, module_root)
                 if command is None:
                     diagnostics.append(
-                        "Maven project detected but mvnw/mvn was not available; "
-                        f"dependency bindings may be incomplete for {self._display(root, pom)}."
+                        "Maven project detected but a Windows-native mvn/mvnw or POSIX mvn/mvnw "
+                        f"was not available for {self._display(root, pom)}; dependency bindings may be incomplete."
                     )
                     continue
                 resolved, error = self._maven_classpath(command, pom)
@@ -74,7 +74,7 @@ class JavaBuildMetadataResolver:
                 gradle_command = self._gradle_command(root)
                 if gradle_command is None:
                     diagnostics.append(
-                        "Gradle project detected but gradlew/gradle was not available; "
+                        "Gradle project detected but a native gradle/gradlew executable was not available; "
                         "dependency bindings may be incomplete."
                     )
                 else:
@@ -85,7 +85,6 @@ class JavaBuildMetadataResolver:
                     if error:
                         diagnostics.append(f"Gradle classpath resolution failed: {error}")
 
-        # These are useful even when Maven/Gradle cannot run (offline/corporate environments).
         classpath.extend(self._local_jars(root))
         classpath.extend(self._all_compiled_outputs(root))
         source_roots.extend(self._all_generated_source_roots(root))
@@ -120,9 +119,7 @@ class JavaBuildMetadataResolver:
     def _maven_command(self, root: Path, module_root: Path) -> list[str] | None:
         current = module_root
         while current == root or root in current.parents:
-            # Never execute the POSIX mvnw shell script directly on Windows.  Doing so
-            # raises WinError 193.  Windows wrappers are .cmd; POSIX uses extensionless mvnw.
-            names = ("mvnw.cmd",) if os.name == "nt" else ("mvnw",)
+            names = ("mvnw.cmd", "mvnw.bat") if os.name == "nt" else ("mvnw",)
             for name in names:
                 wrapper = current / name
                 if wrapper.is_file():
@@ -130,7 +127,11 @@ class JavaBuildMetadataResolver:
             if current == root:
                 break
             current = current.parent
-        executable = shutil.which("mvn")
+
+        if os.name == "nt":
+            executable = self._which_windows(("mvn.cmd", "mvn.bat", "mvn.exe"))
+        else:
+            executable = shutil.which("mvn")
         return self._executable_command(Path(executable)) if executable else None
 
     def _maven_classpath(
@@ -191,13 +192,16 @@ class JavaBuildMetadataResolver:
         return tuple(path.resolve() for path in candidates if ".gradle" not in path.parts)
 
     def _gradle_command(self, root: Path) -> list[str] | None:
-        # Same rule as Maven: .bat on Windows, extensionless shell wrapper on POSIX.
-        names = ("gradlew.bat",) if os.name == "nt" else ("gradlew",)
+        names = ("gradlew.bat", "gradlew.cmd") if os.name == "nt" else ("gradlew",)
         for name in names:
             wrapper = root / name
             if wrapper.is_file():
                 return self._executable_command(wrapper)
-        executable = shutil.which("gradle")
+
+        if os.name == "nt":
+            executable = self._which_windows(("gradle.bat", "gradle.cmd", "gradle.exe"))
+        else:
+            executable = shutil.which("gradle")
         return self._executable_command(Path(executable)) if executable else None
 
     def _gradle_metadata(
@@ -356,22 +360,43 @@ allprojects {
         return tuple(result)
 
     @staticmethod
+    def _which_windows(names: tuple[str, ...]) -> str | None:
+        """Return only native Windows executables/scripts and reject POSIX shims."""
+        for name in names:
+            executable = shutil.which(name)
+            if not executable:
+                continue
+            suffix = Path(executable).suffix.lower()
+            if suffix in {".exe", ".cmd", ".bat"}:
+                return executable
+        return None
+
+    @staticmethod
     def _executable_command(executable: Path) -> list[str]:
         if os.name == "nt" and executable.suffix.lower() in {".cmd", ".bat"}:
-            return ["cmd", "/c", str(executable)]
+            command_processor = os.environ.get("COMSPEC") or "cmd.exe"
+            return [command_processor, "/d", "/s", "/c", str(executable)]
         return [str(executable)]
 
     @staticmethod
     def _run(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            command,
-            cwd=str(cwd),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        try:
+            return subprocess.run(
+                command,
+                cwd=str(cwd),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+        except OSError as exc:
+            return subprocess.CompletedProcess(
+                args=command,
+                returncode=getattr(exc, "winerror", None) or 126,
+                stdout="",
+                stderr=f"{exc.__class__.__name__}: {exc}",
+            )
 
     @staticmethod
     def _command_error(completed: subprocess.CompletedProcess[str]) -> str:

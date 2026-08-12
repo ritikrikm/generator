@@ -51,7 +51,8 @@ class RelationshipTest(unittest.TestCase):
 
         call_edges = [edge for edge in graph.edges if edge.relation == RelationType.CALLS]
         self.assertEqual(len(call_edges), 1)
-        self.assertEqual(call_edges[0].metadata.get("call"), "Target.openLead")
+        self.assertEqual(call_edges[0].metadata.get("resolution"), "eclipse-jdt-binding")
+        self.assertTrue(call_edges[0].metadata.get("binding_key"))
 
     def test_does_not_create_false_edges_for_ambiguous_same_named_methods(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

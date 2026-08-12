@@ -120,7 +120,9 @@ class JavaBuildMetadataResolver:
     def _maven_command(self, root: Path, module_root: Path) -> list[str] | None:
         current = module_root
         while current == root or root in current.parents:
-            names = ("mvnw.cmd", "mvnw") if os.name == "nt" else ("mvnw", "mvnw.cmd")
+            # Never execute the POSIX mvnw shell script directly on Windows.  Doing so
+            # raises WinError 193.  Windows wrappers are .cmd; POSIX uses extensionless mvnw.
+            names = ("mvnw.cmd",) if os.name == "nt" else ("mvnw",)
             for name in names:
                 wrapper = current / name
                 if wrapper.is_file():
@@ -189,7 +191,8 @@ class JavaBuildMetadataResolver:
         return tuple(path.resolve() for path in candidates if ".gradle" not in path.parts)
 
     def _gradle_command(self, root: Path) -> list[str] | None:
-        names = ("gradlew.bat", "gradlew") if os.name == "nt" else ("gradlew", "gradlew.bat")
+        # Same rule as Maven: .bat on Windows, extensionless shell wrapper on POSIX.
+        names = ("gradlew.bat",) if os.name == "nt" else ("gradlew",)
         for name in names:
             wrapper = root / name
             if wrapper.is_file():

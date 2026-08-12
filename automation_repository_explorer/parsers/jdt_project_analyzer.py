@@ -79,7 +79,7 @@ class JdtProjectAnalyzer:
             "Build metadata: "
             f"{len(build_metadata.classpath)} classpath item(s), "
             f"{len(build_metadata.source_roots)} source root(s), "
-            f"source level={build_metadata.source_level or 'default'}."
+            f"source level={build_metadata.source_level or 'JDT-auto'}."
         )
 
         with tempfile.TemporaryDirectory(prefix="are_jdt_") as directory:
@@ -146,21 +146,14 @@ class JdtProjectAnalyzer:
     def _ensure_bridge(self) -> Path:
         pom = self._bridge_root / "pom.xml"
         jar = self._bridge_root / "target" / "are-jdt-bridge.jar"
-        source = (
-            self._bridge_root
-            / "src"
-            / "main"
-            / "java"
-            / "com"
-            / "are"
-            / "jdt"
-            / "JdtAnalyzerMain.java"
-        )
-        if not pom.is_file() or not source.is_file():
+        source_root = self._bridge_root / "src" / "main" / "java"
+        sources = tuple(sorted(source_root.rglob("*.java"))) if source_root.is_dir() else tuple()
+        if not pom.is_file() or not sources:
             raise ParserError(f"Eclipse JDT bridge source is missing under {self._bridge_root}.")
 
-        newest_source = max(pom.stat().st_mtime, source.stat().st_mtime)
-        if jar.is_file() and jar.stat().st_mtime >= newest_source:
+        self._trace(f"JDT bridge contains {len(sources)} Java source file(s).")
+        bridge_inputs = (pom, *sources)
+        if self._bridge_is_current(jar, bridge_inputs):
             self._trace("JDT bridge is already built and up to date.")
             return jar
 
@@ -187,6 +180,14 @@ class JdtProjectAnalyzer:
             )
         self._trace("JDT bridge build completed successfully.")
         return jar
+
+    @staticmethod
+    def _bridge_is_current(jar: Path, bridge_inputs: tuple[Path, ...]) -> bool:
+        """Return true only when the JAR is at least as new as every bridge input."""
+        if not jar.is_file() or not bridge_inputs:
+            return False
+        jar_mtime = jar.stat().st_mtime_ns
+        return all(path.is_file() and path.stat().st_mtime_ns <= jar_mtime for path in bridge_inputs)
 
     def _java_command(self) -> list[str] | None:
         if os.name == "nt":

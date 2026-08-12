@@ -57,7 +57,7 @@
               </filters>
               <transformers>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                  <mainClass>com.are.jdt.JdtAnalyzerMain</mainClass>
+                  <mainClass>com.are.jdt.JdtBootstrapMain</mainClass>
                 </transformer>
               </transformers>
             </configuration>
